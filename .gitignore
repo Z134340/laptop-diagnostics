@@ -1,0 +1,22 @@
+# ── 個人掃描資料(隱私 — 切勿提交)──────────────────
+report/data/
+report/index.html
+
+# ── 本機 / 編輯器設定 ──────────────────────────────
+.claude/settings.local.json
+.claude/settings.json
+.DS_Store
+
+# ── 建置與測試暫存 ────────────────────────────────
+.playwright-mcp/
+__pycache__/
+*.pyc
+*.log
+*.pdf
+
+# ── 打包輸出 ──────────────────────────────────────
+laptop-diagnostics-portable.zip
+*.zip
+
+# ── 手冊原始截圖(含本機彙總數據;手冊 .docx 本身已納入版控)──
+manual_assets/
