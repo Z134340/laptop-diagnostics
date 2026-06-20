@@ -176,6 +176,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             inject = f'<script>window.__REPAIR__={{"token":"{TOKEN}","enabled":true}};</script>'
             html = html.replace("<!--REPAIR_HOOK-->", inject)
             return self._send(200, html, "text/html; charset=utf-8")
+        if self.path == "/api/ping":
+            return self._send(200, json.dumps({"ok": True}))
         if self.path == "/favicon.ico":
             return self._send(204, b"")
         return self._send(404, "not found", "text/plain")
@@ -202,12 +204,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._send(200, json.dumps(result, ensure_ascii=False))
 
 
+class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
 def main():
     if not INDEX.exists():
         print("找不到 report/index.html，請先執行 python3 generate_report.py")
         sys.exit(1)
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
+    with ThreadingServer(("127.0.0.1", PORT), Handler) as httpd:
         url = f"http://127.0.0.1:{PORT}/"
         print("=" * 56)
         print("  Laptop Diagnostics 修復伺服器已啟動")

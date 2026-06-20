@@ -140,6 +140,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, html, "text/html; charset=utf-8")
         if self.path == "/api/scan/status":
             return self._send(200, json.dumps(scan, ensure_ascii=False))
+        if self.path == "/api/ping":
+            return self._send(200, json.dumps({"ok": True}))
         if self.path == "/favicon.ico":
             return self._send(204, b"")
         return self._send(404, "not found", "text/plain")
@@ -167,9 +169,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._send(404, json.dumps({"ok": False, "message": "unknown endpoint"}))
 
 
+class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
 def main():
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
+    with ThreadingServer(("127.0.0.1", PORT), Handler) as httpd:
         url = f"http://127.0.0.1:{PORT}/"
         print("=" * 56)
         print("  電腦健康體檢 已啟動")

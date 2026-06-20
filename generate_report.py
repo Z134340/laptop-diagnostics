@@ -582,6 +582,10 @@ HTML = f"""<!DOCTYPE html>
 </defs></svg>
 <!--REPAIR_HOOK-->
 <div id="toast"></div>
+<div id="repair-banner" style="display:none; align-items:center; gap:12px; background:rgba(251,191,36,.12); border-bottom:1px solid var(--yellow); padding:12px 32px; font-size:13px;">
+  <svg class="ic" style="color:var(--yellow)"><use href="#ic-alert"/></svg>
+  <span class="rb-msg" style="flex:1; color:#e8d29a; line-height:1.6;"></span>
+</div>
 
 <header>
   <svg class="brandmark" viewBox="0 0 64 64" fill="none" role="img" aria-label="MacVitals">
@@ -790,9 +794,16 @@ function showToast(msg, kind) {{
   document.getElementById('toast').appendChild(t);
   setTimeout(() => {{ t.style.transition='opacity .4s'; t.style.opacity='0'; setTimeout(()=>t.remove(), 400); }}, 6000);
 }}
+var BANNER_DIRECT = '修復功能需要從「開始體檢」自動打開的網頁操作。你目前可能是直接打開了報告檔。請回到「開始體檢」的視窗,使用它打開的網頁(網址列會是 127.0.0.1)來查看與修復。';
+var BANNER_DOWN = '「開始體檢」的程式視窗似乎已關閉,所以修復暫時無法執行。請重新雙擊「開始體檢」,再從它打開的網頁操作修復。';
+function showBanner(msg) {{
+  var b = document.getElementById('repair-banner');
+  if (b) {{ b.querySelector('.rb-msg').textContent = msg; b.style.display = 'flex'; }}
+}}
 function doRepair(action, btn, confirmMsg) {{
   if (!window.__REPAIR__ || !window.__REPAIR__.enabled) {{
-    showToast('一鍵修復需透過修復伺服器。請在專案目錄執行：python3 repair_server.py，再用它開啟的網址瀏覽本報告。', 'warn');
+    showBanner(BANNER_DIRECT);
+    showToast('無法修復:' + BANNER_DIRECT, 'warn');
     return;
   }}
   if (!confirm(confirmMsg || '確定要執行此修復嗎？')) return;
@@ -807,8 +818,13 @@ function doRepair(action, btn, confirmMsg) {{
     showToast(d.message || (d.ok ? '完成' : '未完成'), d.ok ? 'ok' : 'danger');
     btn.innerHTML = old; btn.disabled = false;
   }})
-  .catch(e => {{ showToast('連線修復伺服器失敗：' + e, 'danger'); btn.innerHTML = old; btn.disabled = false; }});
+  .catch(e => {{ showBanner(BANNER_DOWN); showToast('無法修復:' + BANNER_DOWN, 'danger'); btn.innerHTML = old; btn.disabled = false; }});
 }}
+// 載入時先確認修復是否可用,不可用就顯示明確橫幅指引
+(function() {{
+  if (!window.__REPAIR__ || !window.__REPAIR__.enabled) {{ showBanner(BANNER_DIRECT); return; }}
+  fetch('/api/ping').then(function(r) {{ if (!r.ok) throw 0; }}).catch(function() {{ showBanner(BANNER_DOWN); }});
+}})();
 function filterTable(tableId, q, colIdx) {{
   const rows = document.querySelectorAll('#'+tableId+' tbody tr');
   const lq = q.toLowerCase();
