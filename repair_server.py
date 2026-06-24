@@ -7,7 +7,7 @@ repair_server.py — Laptop Diagnostics 本機修復伺服器
 啟動：python3 repair_server.py   (預設 http://127.0.0.1:8787，會自動開瀏覽器)
 安全：僅綁定 127.0.0.1；每次請求需比對啟動時隨機產生的 token；只執行下列白名單動作。
 """
-import http.server, socketserver, json, os, subprocess, secrets, webbrowser, sys
+import http.server, socketserver, json, os, subprocess, secrets, webbrowser, sys, socket
 from pathlib import Path
 
 PORT   = 8787
@@ -34,6 +34,13 @@ def human(b):
     if b >= 1024**2: return f"{b/1024**2:.1f} MB"
     if b >= 1024:    return f"{b/1024:.0f} KB"
     return f"{int(b)} B"
+
+def port_open(port, host="127.0.0.1", timeout=1.0):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
 
 # ── 白名單修復動作(每個都自我驗證、唯一限定範圍) ────────────────
 def act_fix_path():
@@ -133,6 +140,29 @@ def act_open_filevault_settings():
     sh('open "x-apple.systempreferences:com.apple.preference.security?FileVault"')
     return {"ok": True, "message": "已開啟「FileVault」設定頁，請在該頁開啟加密並保存還原金鑰。"}
 
+def act_disable_remote_login():
+    # 執行當下先確認:port 22 沒在聽就無事可做(因應掃描後狀態已改變)
+    if not port_open(22):
+        return {"ok": True, "message": "遠端登入(SSH)目前已關閉,無需處理。"}
+    cmd = "systemsetup -f -setremotelogin off"
+    osa = f'do shell script "{cmd}" with administrator privileges'
+    code, out = sh(f"osascript -e '{osa}' 2>&1", timeout=120)
+    if code == 0 and not port_open(22):
+        return {"ok": True, "message": "已關閉遠端登入(SSH)。"}
+    return {"ok": False, "message": "關閉未完成(可能取消了授權或仍在聽):" + out.strip()[-160:]}
+
+def act_disable_screen_sharing():
+    # 執行當下先確認:port 5900 沒在聽就無事可做
+    if not port_open(5900):
+        return {"ok": True, "message": "螢幕共享目前已關閉,無需處理。"}
+    cmd = ("launchctl disable system/com.apple.screensharing; "
+           "launchctl bootout system/com.apple.screensharing")
+    osa = f'do shell script "{cmd}" with administrator privileges'
+    code, out = sh(f"osascript -e '{osa}' 2>&1", timeout=120)
+    if not port_open(5900):
+        return {"ok": True, "message": "已關閉螢幕共享。"}
+    return {"ok": False, "message": "關閉未完成(可能取消了授權或仍在聽):" + out.strip()[-160:]}
+
 def act_enable_gatekeeper():
     _, st = sh("spctl --status 2>&1", timeout=20)
     if "enabled" in st.lower():
@@ -157,6 +187,8 @@ ACTIONS = {
     "thin_snapshots": act_thin_snapshots,
     "open_filevault_settings": act_open_filevault_settings,
     "enable_gatekeeper": act_enable_gatekeeper,
+    "disable_remote_login": act_disable_remote_login,
+    "disable_screen_sharing": act_disable_screen_sharing,
 }
 
 class Handler(http.server.BaseHTTPRequestHandler):

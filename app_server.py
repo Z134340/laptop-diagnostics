@@ -26,12 +26,12 @@ def run_scan():
         for line in p.stdout:
             if "fdupes" in line and "安裝" in line:
                 scan.update(step="準備工具 (fdupes)…", pct=5)
-            mok = re.search(r'M([1-9]) 完成', line)
-            mrun = re.search(r'M([1-9]) ', line)
+            mok = re.search(r'M(\d{1,2}) 完成', line)
+            mrun = re.search(r'M(\d{1,2}) ', line)
             if mok:
-                n = int(mok.group(1)); scan.update(step=f"M{n} 完成", pct=min(92, 5 + n * 9))
+                n = int(mok.group(1)); scan.update(step=f"M{n} 完成", pct=min(92, 5 + n * 8))
             elif mrun:
-                n = int(mrun.group(1)); scan.update(step=f"掃描 M{n}…", pct=min(90, 5 + (n - 1) * 9))
+                n = int(mrun.group(1)); scan.update(step=f"掃描 M{n}…", pct=min(90, 5 + (n - 1) * 8))
         p.wait()
         if p.returncode != 0:
             scan.update(running=False, error="診斷收集失敗,請看終端機視窗的訊息。"); return
@@ -80,7 +80,7 @@ LANDING = """<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
    <div class="word">Mac<span class="v">Vitals</span></div>
    <div class="tag">macOS 健康體檢</div>
  </div>
- <p class="sub">一鍵掃描這台 Mac 的重複檔、大型檔、開發環境、電池、系統健康與安全設定,<br>完成後會產出一份好讀的報告,並可一鍵修復常見問題。<br>過程全程唯讀,不會刪改你的檔案。</p>
+ <p class="sub">一鍵掃描這台 Mac 的重複檔、大型檔、開發環境、電池、系統健康、近期當機、遠端存取與安全設定,<br>完成後會產出一份好讀的報告,並可一鍵修復常見問題。<br>過程全程唯讀,不會刪改你的檔案。</p>
  <div class="actions">
    <button id="go" onclick="startScan()">
      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 3l14 9-14 9z"/></svg>
@@ -115,6 +115,8 @@ function poll(){
   }).catch(e=>setTimeout(poll,1500));
 }
 function showErr(m){document.getElementById('err').textContent='發生問題:'+m;}
+// 自動模式(由 Hermes 控制台嵌入時):載入即開掃,不需再按「開始體檢」
+if("__AUTO__"==="1"){startScan();}
 </script>
 </body></html>"""
 
@@ -129,8 +131,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
-            html = LANDING.replace("__TOKEN__", TOKEN).replace("__HASREPORT__", "inline-flex" if INDEX.exists() else "none")
+        if self.path in ("/", "/index.html", "/auto"):
+            auto = "1" if self.path == "/auto" else "0"
+            html = (LANDING.replace("__TOKEN__", TOKEN)
+                          .replace("__HASREPORT__", "inline-flex" if INDEX.exists() else "none")
+                          .replace("__AUTO__", auto))
             return self._send(200, html, "text/html; charset=utf-8")
         if self.path in ("/report", "/report/", "/report/index.html"):
             if not INDEX.exists():
@@ -181,8 +186,9 @@ def main():
         print(f"  請在瀏覽器操作:{url}")
         print("  ★ 請勿關閉這個視窗(關掉就會停止)。完成後可直接關閉。")
         print("=" * 56)
-        try: webbrowser.open(url)
-        except Exception: pass
+        if not os.environ.get("DIAG_NO_BROWSER"):
+            try: webbrowser.open(url)
+            except Exception: pass
         try: httpd.serve_forever()
         except KeyboardInterrupt: print("\n已結束。")
 

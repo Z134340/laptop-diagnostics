@@ -15,18 +15,18 @@
 - **標準入口(開發/CLI,確保一致性)：`bash run.sh`**(= diagnose.sh → generate_report.py;`--serve` 連同啟動修復伺服器、`--open` 開純檢視報告)。
 - 手動分步:
   1. 安裝前置工具（`fdupes`，若未安裝）
-  2. 執行 `diagnose.sh`（九模組唯讀收集 → `report/data/*.json`）
+  2. 執行 `diagnose.sh`（十一模組唯讀收集 → `report/data/*.json`）
   3. `python3 generate_report.py` 生成 `report/index.html`
-  4. 完成後回報九模組摘要數字
+  4. 完成後回報十一模組摘要數字
   5.（選用）`python3 repair_server.py` 啟動修復伺服器（127.0.0.1:8787），讓摘要頁「修復」按鈕能一鍵執行白名單修復；不啟動則為純唯讀檢視
 - **一致性守則:任何改動 `diagnose.sh` 後,務必 `bash run.sh` 完整跑一次驗證**(`set -euo pipefail` 下,單一模組的 python 例外會中止整支腳本,且資料檔須與 `generate_report.py` 讀取的欄位一致)。
-- 報告摘要頁版面固定順序:頁面說明 → 九個檢查模組一覽 → 整體判讀 → 需要你注意的事 → 運作良好的部分 → 修復涵蓋範圍。
+- 報告摘要頁版面固定順序:頁面說明 → 全部檢查模組一覽 → 整體判讀 → 需要你注意的事 → 運作良好的部分 → 修復涵蓋範圍。
 
 ## 前端一鍵修復（repair_server.py）+ 規則登錄表
 - **修復計畫由掃描結果動態產生**：`generate_report.py` 內有「規則登錄表 `RULES`」，每條 = `applies(掃描資料)→bool` ＋ 嚴重度 ＋ 對應 `action`。報告產生時逐條套用當次掃描,命中才長出按鈕(例:防火牆關才有開火牆鈕、pip 過舊才有更新 pip 鈕、brew 全最新則升級鈕自動消失)。新增一種修復 = 加一條規則 + 一個伺服器動作。
 - 靜態 HTML 無法直接執行修復，故 `repair_server.py` 提供白名單 API；按鈕按下 → confirm → POST `/api/fix` → 伺服器端**在執行當下重新驗證現況**後才執行(不吃報告快照,故舊報告頂多「無事可做」不會誤動)。
-- 白名單動作（13）：`fix_path`/`brew_cleanup`/`clear_caches`/`clean_stale_symlinks`/`fix_m2`/`enable_firewall`/`open_software_update`/`brew_upgrade`/`update_pip`/`update_npm`/`thin_snapshots`/`open_filevault_settings`/`enable_gatekeeper`。
-- 覆蓋:規則表 17 條,涵蓋 M1–M9 各模組的可行動發現;健康/正常項目不觸發(掃到才出對應修復)。硬體類(電池老化、SMART 異常)與需重開機者(SIP)只導引、不一鍵。
+- 白名單動作（15）：`fix_path`/`brew_cleanup`/`clear_caches`/`clean_stale_symlinks`/`fix_m2`/`enable_firewall`/`open_software_update`/`brew_upgrade`/`update_pip`/`update_npm`/`thin_snapshots`/`open_filevault_settings`/`enable_gatekeeper`/`disable_remote_login`/`disable_screen_sharing`。
+- 覆蓋:規則表 24 條,涵蓋 M1–M11 各模組的可行動發現;健康/正常項目不觸發(掃到才出對應修復)。硬體類(電池老化、SMART 異常)、需重開機者(SIP)、當機/panic/高 CPU(只警示避免誤刪 App、誤殺執行中程序)與其他分享服務只導引、不一鍵;分享服務僅可逆的螢幕共享/遠端登入提供一鍵(port-probe 重驗 + `osascript ... with administrator privileges`)。
 - 安全：僅綁 `127.0.0.1`、每次請求比對啟動時隨機 token、只允許白名單；需權限者（防火牆）用 `osascript ... with administrator privileges` 跳原生授權；`update_pip` 只升 pip 本身且 `--user`，不動系統 Python；不做需重啟的系統更新（只開設定頁）。
 
 ## 模組定義
@@ -40,15 +40,21 @@
 | M6 | 電池與電源健康 | `system_profiler SPPowerDataType` |
 | M7 | 系統健康 | `diskutil info /`（SMART）、`memory_pressure`、`sysctl vm.swapusage`、`tmutil listlocalsnapshots /` |
 | M8 | 登入與背景項目 | `~/Library/LaunchAgents`、`/Library/Launch{Agents,Daemons}`、登入項目（osascript） |
-| M9 | 安全與更新狀態 | `fdesetup status`、`csrutil status`、`spctl --status`、`socketfilterfw --getglobalstate`、`softwareupdate -l` |
+| M9 | 安全與更新狀態 | `fdesetup status`、`csrutil status`、`spctl --status`、`socketfilterfw --getglobalstate`、`softwareupdate -l`、`systemextensionsctl list` |
+| M10 | 近期當機與診斷報告 | 掃 `~/Library/Logs/DiagnosticReports` + `/Library/Logs/DiagnosticReports`（`.crash`/`.ips`/`.panic`/`.spin`/`.hang`/`.diag`），依 App 聚合近 30/7 天、標 kernel panic |
+| M11 | 分享與遠端存取 | 對 localhost 探聽通訊埠（22 SSH／5900 VNC／445 SMB／548 AFP／3283 ARD，`nc -z`）+ `autoLoginUser`；**勿用 `launchctl list` 判服務開關（假陽性）** |
+
+> M7 另含即時資源 Top（`ps -arcwwwxo`/`-amcwwwxo`，CPU/記憶體前段快照）。
 
 ## 輸出規格
 - `report/data/m1_dupes.json`
 - `report/data/m2_broken.json`（含 `categories` 三分類與 `stale_symlinks` 真殘留清單）
 - `report/data/m3_large.json`
 - `report/data/m4_env.json`
-- `report/data/m5_reclaimable.json`、`m6_battery.json`、`m7_system.json`、`m8_startup.json`、`m9_security.json`
-- `report/index.html`（互動式，含九個 tab、篩選器、可釋空間加總）
+- `report/data/m5_reclaimable.json`、`m6_battery.json`、`m7_system.json`（含 `top_cpu`/`top_mem`/`top_cpu_max`）、`m8_startup.json`、`m9_security.json`（含 `system_extensions`）
+- `report/data/m10_crashes.json`（依 App 聚合 `apps`、近 30/7 天計數、`panic_count_30d`、`recent`）
+- `report/data/m11_sharing.json`（`services` 各服務 port/state、`open_count`、`auto_login`）
+- `report/index.html`（互動式，含十一個 tab、篩選器、可釋空間加總）
 
 ## 經驗與判讀（重要，詳見 `.claude/skills/laptop-diagnostics/SKILL.md`）
 - **M2 斷裂 symlink 約 99.7% 是正常的**，務必分三類，只有 `stale` 需處理：

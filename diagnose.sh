@@ -519,6 +519,24 @@ mem_free = "—"
 mm = re.search(r"free percentage:\s*(\d+%)", mem)
 if mm: mem_free = mm.group(1)
 
+# 即時資源占用 Top(快照,瞬時值;-r 依 CPU 排序、-m 依記憶體排序)
+def parse_ps(raw):
+    rows = []
+    for line in raw.strip().split("\n")[1:]:  # 跳表頭
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit():
+            rows.append({"pid": parts[0], "cpu": parts[1], "mem": parts[2], "name": parts[3]})
+    return rows
+top_cpu = parse_ps(run("ps -arcwwwxo pid,pcpu,pmem,comm 2>/dev/null | head -9"))
+top_mem = parse_ps(run("ps -amcwwwxo pid,pcpu,pmem,comm 2>/dev/null | head -9"))
+def _maxcpu(rows):
+    vals = []
+    for r in rows:
+        try: vals.append(float(r["cpu"]))
+        except Exception: pass
+    return max(vals) if vals else 0.0
+top_cpu_max = _maxcpu(top_cpu)
+
 result = {
   "module": "M7", "scan_time": datetime.now().isoformat(),
   "smart_status":        g("SMART Status"),
@@ -530,9 +548,13 @@ result = {
   "uptime":              run("uptime"),
   "local_snapshots_count": len(snap_list),
   "local_snapshots":     snap_list[:20],
+  "top_cpu":             top_cpu,
+  "top_mem":             top_mem,
+  "top_cpu_max":         top_cpu_max,
 }
 json.dump(result, open(sys.argv[1],'w'), ensure_ascii=False, indent=2)
-print(f"  → SMART：{result['smart_status']}，可用 {result['container_free']}，快照 {result['local_snapshots_count']} 個")
+busiest = (top_cpu[0]["name"] + " " + top_cpu[0]["cpu"] + "%") if top_cpu else "—"
+print(f"  → SMART：{result['smart_status']}，可用 {result['container_free']}，快照 {result['local_snapshots_count']} 個，最忙程序 {busiest}")
 PYEOF
 ok "M7 完成 → $M7_JSON"
 
@@ -602,6 +624,11 @@ sip        = run("csrutil status 2>&1")
 gatekeeper = run("spctl --status 2>&1")
 firewall   = run("/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>&1")
 
+# System Extensions(第三方核心/網路擴充;老舊或殘留者是當機/卡頓常見元兇,唯讀)
+sysext = run("systemextensionsctl list 2>&1")
+sysext_active = [l.strip() for l in sysext.split("\n")
+                 if "activated" in l.lower() and "enabled" in l.lower()]
+
 # 待安裝更新（network，可能較慢；逾時則標記）
 sw = run("softwareupdate -l 2>&1", timeout=90)
 updates = [l.strip() for l in sw.split("\n") if l.strip().startswith("* Label:")]
@@ -621,11 +648,142 @@ result = {
   "pending_updates": updates,
   "pending_updates_count": len(updates),
   "softwareupdate_raw": sw[:2000],
+  "system_extensions": {
+    "active_count": len(sysext_active),
+    "active": sysext_active[:30],
+    "raw": sysext[:1500],
+  },
 }
 json.dump(result, open(sys.argv[1],'w'), ensure_ascii=False, indent=2)
 print(f"  → FileVault {result['filevault']['state']} / SIP {result['sip']['state']} / Gatekeeper {result['gatekeeper']['state']} / 防火牆 {result['firewall']['state']}；待更新 {len(updates)} 項")
 PYEOF
 ok "M9 完成 → $M9_JSON"
+
+# ─────────────────────────────────────────────────────────────
+# M10：近期當機與診斷報告（唯讀）
+# ─────────────────────────────────────────────────────────────
+log "M10 近期當機與診斷報告..."
+M10_JSON="$DATA_DIR/m10_crashes.json"
+python3 - "$M10_JSON" <<'PYEOF'
+import sys, os, json, re
+from datetime import datetime
+
+HOME = os.path.expanduser("~")
+DIRS = [os.path.join(HOME, "Library/Logs/DiagnosticReports"),
+        "/Library/Logs/DiagnosticReports"]
+KINDS = (".crash", ".ips", ".panic", ".spin", ".hang", ".diag", ".wakeups_resource", ".cpu_resource")
+now = datetime.now().timestamp()
+DAY = 86400
+
+reports = []
+for d in DIRS:
+    if not os.path.isdir(d): continue
+    scope = "system" if d.startswith("/Library") else "user"
+    try: names = os.listdir(d)
+    except Exception: continue
+    for fn in names:
+        ext = os.path.splitext(fn)[1].lower()
+        if ext not in KINDS: continue
+        fp = os.path.join(d, fn)
+        try: st = os.stat(fp)
+        except Exception: continue
+        # App 名 = 檔名在第一個 -YYYY-MM-DD 之前的部分
+        app = re.split(r'[-_]\d{4}-\d{2}-\d{2}', fn)[0] or fn
+        is_panic = (ext == ".panic") or ("panic" in fn.lower()) or app.lower().startswith("kernel")
+        reports.append({
+            "app": app, "kind": ext.lstrip("."), "file": fn, "scope": scope,
+            "ts": st.st_mtime, "date": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            "is_panic": is_panic,
+        })
+
+c30, c7 = now - 30*DAY, now - 7*DAY
+recent30 = [r for r in reports if r["ts"] >= c30]
+recent7  = [r for r in recent30 if r["ts"] >= c7]
+panic30  = [r for r in recent30 if r["is_panic"]]
+
+agg = {}
+for r in recent30:
+    a = agg.get(r["app"])
+    if not a:
+        a = {"app": r["app"], "count": 0, "count7": 0, "kinds": set(),
+             "last": r["date"], "last_ts": r["ts"], "panic": False}
+        agg[r["app"]] = a
+    a["count"] += 1
+    if r["ts"] >= c7: a["count7"] += 1
+    a["kinds"].add(r["kind"])
+    if r["ts"] > a["last_ts"]: a["last_ts"], a["last"] = r["ts"], r["date"]
+    if r["is_panic"]: a["panic"] = True
+apps = sorted(agg.values(), key=lambda x: (x["count"], x["count7"]), reverse=True)
+for a in apps:
+    a["kinds"] = ",".join(sorted(a["kinds"])); a.pop("last_ts", None)
+
+recent_list = sorted(recent30, key=lambda x: x["ts"], reverse=True)[:20]
+for r in recent_list: r.pop("ts", None)
+
+result = {
+  "module": "M10", "scan_time": datetime.now().isoformat(),
+  "total_reports": len(reports),
+  "count_30d": len(recent30), "count_7d": len(recent7),
+  "panic_count_30d": len(panic30),
+  "apps": apps[:25],
+  "recent": recent_list,
+}
+json.dump(result, open(sys.argv[1], 'w'), ensure_ascii=False, indent=2)
+worst = f"{apps[0]['app']}×{apps[0]['count']}" if apps else "無"
+print(f"  → 近30天當機報告 {len(recent30)} 筆(近7天 {len(recent7)})，核心崩潰 {len(panic30)}，最頻繁：{worst}")
+PYEOF
+ok "M10 完成 → $M10_JSON"
+
+# ─────────────────────────────────────────────────────────────
+# M11：分享與遠端存取（唯讀，對 localhost 探聽通訊埠）
+# ─────────────────────────────────────────────────────────────
+log "M11 分享與遠端存取..."
+M11_JSON="$DATA_DIR/m11_sharing.json"
+python3 - "$M11_JSON" <<'PYEOF'
+import sys, json, socket, subprocess
+from datetime import datetime
+
+def port_open(port, host="127.0.0.1", timeout=1.0):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+# (key, 中文名, port, 風險說明, 修復動作 id 或 None)
+SERVICES = [
+  ("remote_login",  "遠端登入 (SSH)",   22,   "允許他人用帳密/金鑰透過 SSH 登入這台 Mac", "disable_remote_login"),
+  ("screen_sharing","螢幕共享 (VNC)",   5900, "允許他人遠端看見並控制你的桌面",          "disable_screen_sharing"),
+  ("file_sharing",  "檔案共享 (SMB)",   445,  "對外開放分享資料夾",                      None),
+  ("file_sharing_afp","檔案共享 (AFP)", 548,  "對外開放分享資料夾(舊版協定)",            None),
+  ("remote_mgmt",   "遠端管理 (ARD)",   3283, "Apple Remote Desktop 遠端管理",          None),
+]
+services = []
+open_count = 0
+for key, name, port, risk, action in SERVICES:
+    is_open = port_open(port)
+    if is_open: open_count += 1
+    services.append({"key": key, "name": name, "port": port, "risk": risk,
+                     "state": "on" if is_open else "off", "action": action})
+
+# 自動登入(唯讀;空 = 未設定)
+def run(cmd):
+    try: return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15).stdout.strip()
+    except Exception: return ""
+auto_login_user = run("defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null")
+auto_login = bool(auto_login_user) and "does not exist" not in auto_login_user.lower()
+
+result = {
+  "module": "M11", "scan_time": datetime.now().isoformat(),
+  "services": services,
+  "open_count": open_count,
+  "auto_login": auto_login,
+  "auto_login_user": auto_login_user if auto_login else "",
+}
+json.dump(result, open(sys.argv[1], 'w'), ensure_ascii=False, indent=2)
+print(f"  → 對外存取服務開啟 {open_count}/5，自動登入：{'是('+auto_login_user+')' if auto_login else '否'}")
+PYEOF
+ok "M11 完成 → $M11_JSON"
 
 # ─────────────────────────────────────────────────────────────
 # 完成摘要

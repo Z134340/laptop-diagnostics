@@ -36,6 +36,8 @@ m6 = load("m6_battery.json")
 m7 = load("m7_system.json")
 m8 = load("m8_startup.json")
 m9 = load("m9_security.json")
+m10 = load("m10_crashes.json")
+m11 = load("m11_sharing.json")
 
 scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -215,6 +217,64 @@ if m9:
 m9_updates = (m9 or {}).get("pending_updates", [])
 m9_upd_rows = "".join(f"<tr><td class='warn'>{u.replace('* Label: ','')}</td></tr>" for u in m9_updates) or "<tr><td class='ok'>系統已是最新</td></tr>"
 
+# ── M7 即時資源占用 Top ───────────────────────────────────────
+def proc_rows(rows):
+    out = ""
+    for p in rows or []:
+        try: hot = float(p.get("cpu","0")) >= 70
+        except Exception: hot = False
+        out += (f"<tr><td class=\"{'warn' if hot else ''}\">{p.get('name','')}</td>"
+                f"<td class='num'>{p.get('cpu','—')}%</td><td class='num'>{p.get('mem','—')}%</td>"
+                f"<td class='muted'>{p.get('pid','')}</td></tr>")
+    return out or "<tr><td colspan='4' class='empty'>無資料</td></tr>"
+m7_cpu_rows = proc_rows((m7 or {}).get("top_cpu", []))
+m7_mem_rows = proc_rows((m7 or {}).get("top_mem", []))
+m7_top_cpu_max = (m7 or {}).get("top_cpu_max", 0) or 0
+m7_busiest = ((m7 or {}).get("top_cpu") or [{}])[0].get("name", "—")
+
+# ── M9 System Extensions ─────────────────────────────────────
+m9_sysext = (m9 or {}).get("system_extensions", {}) or {}
+m9_sysext_n = m9_sysext.get("active_count", 0)
+m9_sysext_rows = "".join(f"<tr><td class='file-path'>{x}</td></tr>" for x in m9_sysext.get("active", [])) \
+                 or "<tr><td class='ok'>無第三方 system extension(乾淨)</td></tr>"
+
+# ── M10 近期當機 ──────────────────────────────────────────────
+m10_7d   = (m10 or {}).get("count_7d", 0)
+m10_30d  = (m10 or {}).get("count_30d", 0)
+m10_panic= (m10 or {}).get("panic_count_30d", 0)
+m10_apps = (m10 or {}).get("apps", [])
+m10_worst = m10_apps[0] if m10_apps else None
+m10_worst_7d = (m10_worst or {}).get("count7", 0)
+m10_app_rows = ""
+for a in m10_apps:
+    hot = a.get("count7", 0) >= 5 or a.get("panic")
+    badge = " <span class='hl-badge danger'>核心崩潰</span>" if a.get("panic") else ""
+    m10_app_rows += (f"<tr><td class=\"{'warn' if hot else ''}\">{a.get('app','')}{badge}</td>"
+                     f"<td class='num'>{a.get('count',0)}</td><td class='num'>{a.get('count7',0)}</td>"
+                     f"<td class='muted'>{a.get('kinds','')}</td><td class='muted'>{a.get('last','')}</td></tr>")
+m10_app_rows = m10_app_rows or "<tr><td colspan='5' class='empty'>近 30 天無當機紀錄</td></tr>"
+m10_recent_rows = "".join(
+    f"<tr><td>{r.get('app','')}</td><td>{r.get('kind','')}</td><td class='muted'>{r.get('date','')}</td>"
+    f"<td class='muted'>{r.get('scope','')}</td></tr>" for r in (m10 or {}).get("recent", [])
+) or "<tr><td colspan='4' class='empty'>無</td></tr>"
+
+# ── M11 分享 / 遠端存取 ───────────────────────────────────────
+m11_services = (m11 or {}).get("services", [])
+m11_open_n   = (m11 or {}).get("open_count", 0)
+m11_autologin= (m11 or {}).get("auto_login", False)
+m11_open_services = [s for s in m11_services if s.get("state") == "on"]
+m11_state = {s.get("key"): s.get("state") for s in m11_services}
+# 已開放、但無一鍵修復(僅導引到系統設定)的服務名稱
+m11_other_open = [s["name"] for s in m11_open_services if not s.get("action")]
+def _m11_badge(state):
+    return (f"<span class='hl-badge warn'>開啟</span>" if state == "on"
+            else "<span class='cov-off'>關閉</span>")
+m11_rows = "".join(
+    f"<tr><td class=\"{'warn' if s.get('state')=='on' else ''}\">{s.get('name','')}</td>"
+    f"<td class='num'>{s.get('port','')}</td><td>{_m11_badge(s.get('state'))}</td>"
+    f"<td class='muted'>{s.get('risk','')}</td></tr>" for s in m11_services
+) or "<tr><td colspan='4' class='empty'>無資料</td></tr>"
+
 # ── 修復規則登錄表 (rule registry) ────────────────────────────
 # 「掃描結果 → 修復計畫」的單一對照表。報告產生時逐條套用「當次掃描資料」,
 # applies() 命中才長出對應的重點與按鈕。新增一種修復 = 加一條規則(+伺服器動作)。
@@ -326,6 +386,40 @@ RULES = [
    "title": lambda: f"{m3_total} 個大型檔案 · 共 {m3_gb} GB",
    "desc":"超過 100MB 的大檔。大不等於該刪——M3 已標註每個檔案用途,請自行判斷後處理(不提供一鍵刪除以策安全)。",
    "action": None},
+
+  # ── M10 近期當機 ──────────────────────────────────────────
+  {"id":"kernel_panic", "applies": lambda: m10_panic > 0, "sev":"danger", "icon":"pulse", "tab":10,
+   "title": lambda: f"近 30 天發生 {m10_panic} 次核心崩潰(整機重開)",
+   "desc":"Kernel panic 代表系統層級崩潰、整台重新開機,常見原因是老舊驅動/核心擴充或硬體。請查 M10 崩潰來源,並更新或移除相關第三方擴充(見 M9 System Extensions)。",
+   "action": None},
+  {"id":"frequent_crashes", "applies": lambda: m10_worst_7d >= 5, "sev":"warn", "icon":"pulse", "tab":10,
+   "title": lambda: f"{(m10_worst or {}).get('app','某 App')} 近 7 天當機 {m10_worst_7d} 次",
+   "desc":"同一支程式反覆當機通常是它本身的問題(版本過舊/設定損壞),也會持續吃資源。建議更新或重裝該 App;若是你已不用的軟體,可考慮移除。不提供一鍵動作以免誤刪。",
+   "action": None},
+
+  # ── M7 即時資源 ───────────────────────────────────────────
+  {"id":"high_cpu", "applies": lambda: (m7_top_cpu_max or 0) >= 80, "sev":"warn", "icon":"activity", "tab":7,
+   "title": lambda: f"掃描當下有程序高 CPU 占用({m7_busiest} {m7_top_cpu_max}%)",
+   "desc":"這是掃描瞬間的快照(非持續監測)。若該程序長時間維持高占用會發燙、耗電、變慢。請到「活動監視器」確認;若與 M10 反覆當機是同一支,優先處理它。不提供一鍵結束程序以免中斷你正在做的事。",
+   "action": None},
+
+  # ── M11 分享 / 遠端存取 ───────────────────────────────────
+  {"id":"screen_sharing_on", "applies": lambda: m11_state.get("screen_sharing")=="on", "sev":"warn", "icon":"share", "tab":11,
+   "title": lambda: "螢幕共享(VNC)目前開啟",
+   "desc":"螢幕共享開啟代表他人可遠端看見並控制你的桌面。若非刻意開啟,建議關閉以縮小攻擊面。",
+   "action":{"id":"disable_screen_sharing","label":"一鍵關閉螢幕共享","confirm":"將關閉「螢幕共享」服務(會跳出輸入密碼的授權視窗)。確定?"}},
+  {"id":"remote_login_on", "applies": lambda: m11_state.get("remote_login")=="on", "sev":"warn", "icon":"share", "tab":11,
+   "title": lambda: "遠端登入(SSH)目前開啟",
+   "desc":"SSH 開啟代表他人可用帳密或金鑰透過網路登入這台 Mac。若不需要遠端登入,建議關閉。",
+   "action":{"id":"disable_remote_login","label":"一鍵關閉遠端登入","confirm":"將關閉「遠端登入 SSH」服務(會跳出輸入密碼的授權視窗)。確定?"}},
+  {"id":"other_sharing_on", "applies": lambda: bool(m11_other_open), "sev":"warn", "icon":"share", "tab":11,
+   "title": lambda: "對外分享服務開啟:" + "、".join(m11_other_open),
+   "desc":"偵測到對外開放的分享服務。若非刻意開啟,請到「系統設定 → 一般 → 共享」關閉對應項目(這類服務不提供一鍵關閉,避免誤關你正在用的分享)。",
+   "action": None},
+  {"id":"auto_login_on", "applies": lambda: bool(m11_autologin), "sev":"warn", "icon":"share", "tab":11,
+   "title": lambda: "已啟用開機自動登入",
+   "desc":"自動登入代表開機不需密碼就進入你的帳號,筆電遺失或被他人開機即可直接存取你的資料。建議到「系統設定 → 鎖定畫面 → 自動以此身分登入」關閉。",
+   "action": None},
 ]
 
 SEV_RANK = {"danger":0, "warn":1, "info":2}
@@ -346,6 +440,10 @@ if m7_smart and "verif" in str(m7_smart).lower():
     positives.append(f"硬碟 SMART 正常、可用空間 {m7_free}")
 if m9 and m9.get("filevault",{}).get("state")=="on":
     positives.append("FileVault 磁碟加密已開啟")
+if m10 and m10_7d == 0:
+    positives.append("近 7 天沒有 App 當機紀錄")
+if m11 and m11_open_n == 0 and not m11_autologin:
+    positives.append("未開放遠端存取(SSH／螢幕共享／檔案共享皆關閉)、無自動登入")
 pos_html = "".join(f"<li>{ic('check','ic-ok')}<span>{p}</span></li>" for p in positives) or "<li class='muted'>—</li>"
 
 n_danger = sum(1 for h in highlights if h[0]=="danger")
@@ -396,6 +494,14 @@ overview = [
      f"防火牆{'開啟' if m9_fw=='on' else ('關閉' if m9_fw=='off' else '未知')} · 更新 {m9_upd_n}",
      "系統安全防線與待更新",
      "danger" if (m9_fw=="off") else ("warn" if m9_upd_n else "ok")),
+  (10,"pulse","M10 近期當機",
+     f"近7天 {m10_7d} 筆 · 核心崩潰 {m10_panic}",
+     "App 與系統的崩潰紀錄",
+     "danger" if m10_panic else ("warn" if m10_worst_7d >= 5 else ("info" if m10_7d else "ok"))),
+  (11,"share","M11 分享存取",
+     f"對外服務開啟 {m11_open_n}/5" + (" · 自動登入" if m11_autologin else ""),
+     "遠端登入與分享攻擊面",
+     "warn" if (m11_open_n or m11_autologin) else "ok"),
 ]
 ov_html = ""
 for num, icon, label, val, desc, status in overview:
@@ -406,7 +512,8 @@ for num, icon, label, val, desc, status in overview:
 
 # ── 修復涵蓋範圍(由規則表動態產生,永遠與 RULES 同步) ──────────
 TAB_NAMES = {1:"M1 重複檔",2:"M2 損壞項目",3:"M3 大型檔",4:"M4 開發環境",5:"M5 可回收",
-             6:"M6 電池",7:"M7 系統健康",8:"M8 登入背景",9:"M9 安全更新"}
+             6:"M6 電池",7:"M7 系統健康",8:"M8 登入背景",9:"M9 安全更新",
+             10:"M10 近期當機",11:"M11 分享存取"}
 FINDING = {
   "firewall_off":"防火牆關閉", "os_updates":"系統更新待安裝", "brew_outdated":"Homebrew 套件過舊",
   "pip_outdated":"pip 版本過舊", "npm_global_outdated":"npm 全域套件過舊", "third_party_agents":"第三方開機自啟",
@@ -414,9 +521,14 @@ FINDING = {
   "smart_fail":"硬碟 SMART 異常", "low_disk":"磁碟空間不足", "apfs_snapshots":"APFS 快照偏多",
   "battery_health":"電池老化", "filevault_off":"FileVault 未開啟", "sip_off":"SIP 已關閉",
   "gatekeeper_off":"Gatekeeper 已關閉", "large_files":"大型檔案佔空間",
+  "kernel_panic":"核心崩潰(panic)", "frequent_crashes":"App 反覆當機", "high_cpu":"程序高 CPU 占用",
+  "screen_sharing_on":"螢幕共享開啟", "remote_login_on":"遠端登入開啟",
+  "other_sharing_on":"其他分享服務開啟", "auto_login_on":"開機自動登入",
 }
 MANUAL = {"smart_fail":"硬體 · 僅警示", "battery_health":"硬體 · 僅警示", "sip_off":"需 Recovery 模式",
-          "dupes":"刪檔需取捨", "large_files":"需自行判斷", "third_party_agents":"需逐一判斷"}
+          "dupes":"刪檔需取捨", "large_files":"需自行判斷", "third_party_agents":"需逐一判斷",
+          "kernel_panic":"硬體/驅動 · 僅警示", "frequent_crashes":"更新/移除該 App", "high_cpu":"快照 · 僅警示",
+          "other_sharing_on":"到系統設定關閉", "auto_login_on":"到系統設定關閉"}
 cov_active = 0
 cov_rows = ""
 for r in RULES:
@@ -555,6 +667,9 @@ HTML = f"""<!DOCTYPE html>
   .mod-top {{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }}
   .mod-ic {{ color:var(--cyan); display:flex; }} .mod-label {{ font-weight:600; font-size:13px; flex:1; }} .mod-arrow {{ color:var(--muted); display:flex; }} .mod-arrow .ic {{ width:15px; height:15px; }}
   .mod-val {{ font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; }} .mod-desc {{ color:var(--muted); font-size:12px; margin-top:4px; }}
+  .cards-2 {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+  .mini-title {{ font-size:12px; font-weight:600; color:var(--muted); margin:0 0 6px; text-transform:uppercase; letter-spacing:.04em; }}
+  @media (max-width:640px) {{ .cards-2 {{ grid-template-columns:1fr; }} }}
   @media (max-width:640px) {{ .cards {{ grid-template-columns:repeat(2,1fr); }} header,.tabs,.panel {{ padding-left:16px; padding-right:16px; }} }}
 </style>
 </head>
@@ -579,6 +694,8 @@ HTML = f"""<!DOCTYPE html>
   <symbol id="ic-refresh" viewBox="0 0 24 24"><path d="M20 11.5A8 8 0 1 0 18.4 16"/><path d="M20 4v6h-6"/></symbol>
   <symbol id="ic-arrow" viewBox="0 0 24 24"><path d="M7 17L17 7"/><path d="M8 7h9v9"/></symbol>
   <symbol id="ic-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="ic-pulse" viewBox="0 0 24 24"><path d="M3 12h3l2.5-7 4 15 3-10 1.5 2H21"/></symbol>
+  <symbol id="ic-share" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><path d="M8.1 10.9 15.9 7.1"/><path d="M8.1 13.1 15.9 16.9"/></symbol>
 </defs></svg>
 <!--REPAIR_HOOK-->
 <div id="toast"></div>
@@ -609,12 +726,14 @@ HTML = f"""<!DOCTYPE html>
   <div class="tab" onclick="switchTab(7)">{ic('activity')}M7 系統健康</div>
   <div class="tab" onclick="switchTab(8)">{ic('power')}M8 登入背景</div>
   <div class="tab" onclick="switchTab(9)">{ic('shield')}M9 安全更新</div>
+  <div class="tab" onclick="switchTab(10)">{ic('pulse')}M10 近期當機</div>
+  <div class="tab" onclick="switchTab(11)">{ic('share')}M11 分享存取</div>
 </div>
 
 <!-- 摘要 Panel -->
 <div class="panel active" id="p0">
-  {note("這頁是整台電腦的健康總覽。先看「九個檢查模組一覽」掌握全貌(點任一卡片可跳到該模組看細節),接著是整體判讀與「需要你注意的事」(依重要性排序),然後是「運作良好的部分」,最後可展開「修復涵蓋範圍」對照表。")}
-  <div class="section-title">九個檢查模組一覽</div>
+  {note("這頁是整台電腦的健康總覽。先看「全部檢查模組一覽」掌握全貌(點任一卡片可跳到該模組看細節),接著是整體判讀與「需要你注意的事」(依重要性排序),然後是「運作良好的部分」,最後可展開「修復涵蓋範圍」對照表。")}
+  <div class="section-title">全部檢查模組一覽</div>
   <div class="mod-grid">{ov_html}</div>
   <div class="verdict {vcls}">
     <div class="verdict-ic">{ic(vicon,'ic-lg')}</div>
@@ -746,6 +865,20 @@ HTML = f"""<!DOCTYPE html>
     <div class="card info"><div class="label">記憶體空閒</div><div class="value">{m7_mem}</div><div class="sub">free percentage</div></div>
     <div class="card {'ok' if str(m7_snaps)=='0' else 'warn'}"><div class="label">APFS 本機快照</div><div class="value">{m7_snaps}</div><div class="sub">系統自動回收</div></div>
   </div>
+  <div class="section-title">即時資源占用 Top(掃描當下快照)</div>
+  {note("這是掃描「那一瞬間」最吃 CPU／記憶體的程序排行,不是持續監測。偶爾某程序衝高是正常的;但若某程序長期維持高占用(會發燙、耗電、變慢),或與 M10 反覆當機是同一支,就值得到「活動監視器」進一步確認處理。≥70% 會標黃。")}
+  <div class="cards-2">
+    <div>
+      <div class="mini-title">CPU 占用前段</div>
+      <div class="tbl-wrap"><table><thead><tr><th>程序</th><th>CPU</th><th>記憶體</th><th>PID</th></tr></thead>
+      <tbody>{m7_cpu_rows}</tbody></table></div>
+    </div>
+    <div>
+      <div class="mini-title">記憶體占用前段</div>
+      <div class="tbl-wrap"><table><thead><tr><th>程序</th><th>CPU</th><th>記憶體</th><th>PID</th></tr></thead>
+      <tbody>{m7_mem_rows}</tbody></table></div>
+    </div>
+  </div>
   <div class="section-title">細節</div>
   <div class="tbl-wrap"><table><tbody>
     <tr><td class="muted">磁碟總容量</td><td>{m7_total_d}</td></tr>
@@ -779,6 +912,46 @@ HTML = f"""<!DOCTYPE html>
   <div class="cards" style="padding:0 0 8px;">{m9_cards}</div>
   <div class="section-title">待安裝更新（{m9_upd_n} 項）</div>
   <div class="tbl-wrap"><table><tbody>{m9_upd_rows}</tbody></table></div>
+  <div class="section-title">已啟用的 System Extensions（{m9_sysext_n} 個）</div>
+  {note("System Extension 是第三方 App 安裝的核心／網路擴充(防毒、VPN、虛擬網卡等)。正常使用中的不用動;但已移除 App 殘留的、或老舊版本的擴充,是當機(kernel panic)與卡頓的常見元兇——若看到不認得或早該移除的,從對應 App 的設定移除。")}
+  <div class="tbl-wrap"><table><tbody>{m9_sysext_rows}</tbody></table></div>
+</div>
+
+<!-- M10 Panel -->
+<div class="panel" id="p10">
+  <div class="panel-head">{ic('pulse')}M10 近期當機</div>
+  {note("彙整 macOS 自動保存的崩潰／診斷報告(~/Library/Logs/DiagnosticReports 與系統目錄),依 App 統計近 30 天／近 7 天的當機次數。同一支程式反覆當機通常是它本身的問題;『核心崩潰(panic)』則是系統層級、會整台重開,多與老舊驅動或 System Extension 有關。這頁只判讀、不自動刪除任何東西。")}
+  <div class="cards" style="padding:0 0 8px;">
+    <div class="card {'info' if m10_30d else 'ok'}"><div class="label">近 30 天當機報告</div><div class="value">{m10_30d}</div><div class="sub">所有 App 合計</div></div>
+    <div class="card {'warn' if m10_7d else 'ok'}"><div class="label">近 7 天</div><div class="value">{m10_7d}</div><div class="sub">最近一週</div></div>
+    <div class="card {'danger' if m10_panic else 'ok'}"><div class="label">核心崩潰 (panic)</div><div class="value">{m10_panic}</div><div class="sub">整機重開 · 近 30 天</div></div>
+    <div class="card info"><div class="label">最頻繁來源</div><div class="value" style="font-size:16px">{(m10_worst or {}).get('app','—')}</div><div class="sub">近 30 天 {(m10_worst or {}).get('count',0)} 次</div></div>
+  </div>
+  <div class="section-title">依 App 統計(近 30 天)</div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>程序 / App</th><th>30 天</th><th>7 天</th><th>類型</th><th>最近一次</th></tr></thead>
+    <tbody>{m10_app_rows}</tbody>
+  </table></div>
+  <div class="section-title">最近 20 筆報告</div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>程序 / App</th><th>類型</th><th>時間</th><th>範圍</th></tr></thead>
+    <tbody>{m10_recent_rows}</tbody>
+  </table></div>
+</div>
+
+<!-- M11 Panel -->
+<div class="panel" id="p11">
+  <div class="panel-head">{ic('share')}M11 分享存取</div>
+  {note("檢查這台 Mac 對外開放了哪些遠端存取／分享服務——這些是別人能從網路接觸到你電腦的『門』。做法是對本機通訊埠探聽(唯讀),反映服務是否真的在聽。非刻意開啟的建議關閉以縮小攻擊面。螢幕共享與遠端登入可一鍵關閉(會跳原生授權視窗);其餘請到「系統設定 → 一般 → 共享」處理。")}
+  <div class="cards" style="padding:0 0 8px;">
+    <div class="card {'warn' if m11_open_n else 'ok'}"><div class="label">對外服務開啟</div><div class="value">{m11_open_n}<span style="font-size:15px;color:var(--muted)"> / 5</span></div><div class="sub">越少越安全</div></div>
+    <div class="card {'warn' if m11_autologin else 'ok'}"><div class="label">開機自動登入</div><div class="value" style="font-size:20px">{'是' if m11_autologin else '否'}</div><div class="sub">遺失時免密碼進入</div></div>
+  </div>
+  <div class="section-title">遠端存取 / 分享服務</div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>服務</th><th>通訊埠</th><th>狀態</th><th>風險說明</th></tr></thead>
+    <tbody>{m11_rows}</tbody>
+  </table></div>
 </div>
 
 <script>
