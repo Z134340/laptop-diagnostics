@@ -320,8 +320,8 @@ RULES = [
 
   {"id":"npm_global_outdated", "applies": lambda: m4_npm_g_outdated_n > 0, "sev":"info", "icon":"terminal", "tab":4,
    "title": lambda: f"npm 有 {m4_npm_g_outdated_n} 個全域套件可更新",
-   "desc":"全域 npm 套件有新版。點「更新 npm」會把 npm 本身更新到最新(其他全域套件請到 M4 自行斟酌)。",
-   "action":{"id":"update_npm","label":"更新 npm","confirm":"將把 npm 本身更新到最新版。確定?"}},
+   "desc":"全域 npm 套件有新版(例如 Claude Code CLI 更新頻繁,幾乎每天有新版)。點「更新全域 npm」會用 npm update -g 把它們一起更到最新,更新後此項就會消失。",
+   "action":{"id":"update_npm","label":"更新全域 npm","confirm":"將執行 npm update -g 更新所有全域 npm 套件(含 Claude Code CLI 等)到最新。確定?"}},
 
   {"id":"third_party_agents", "applies": lambda: bool(m8_tp), "sev":"warn", "icon":"power", "tab":8,
    "title": lambda: f"{len(m8_tp)} 個第三方開機自啟項目",

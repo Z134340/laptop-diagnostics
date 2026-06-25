@@ -122,9 +122,15 @@ def act_update_pip():
     return {"ok": True, "message": f"pip 已更新到最新({ver})。套件升級請於虛擬環境自行處理。"}
 
 def act_update_npm():
-    code, out = sh("npm install -g npm 2>&1", timeout=300)
-    _, v = sh("npm -v 2>/dev/null", timeout=20)
-    return {"ok": True, "message": f"npm 已更新到最新({v.strip()})。"}
+    # 執行當下重新確認;更新「全部」全域 npm 套件(含 Claude Code CLI 等),不只 npm 本身
+    _, before = sh("npm outdated -g --parseable 2>/dev/null", timeout=60)
+    n0 = len([x for x in before.split("\n") if x.strip()])
+    if n0 == 0:
+        return {"ok": True, "message": "全域 npm 套件都已是最新,無需更新。"}
+    sh("npm update -g 2>&1", timeout=600)
+    _, after = sh("npm outdated -g --parseable 2>/dev/null", timeout=60)
+    n1 = len([x for x in after.split("\n") if x.strip()])
+    return {"ok": True, "message": f"已更新全域 npm 套件({n0 - n1} 個完成,尚餘 {n1} 個)。"}
 
 def act_thin_snapshots():
     _, before = sh("tmutil listlocalsnapshots / 2>/dev/null", timeout=30)
