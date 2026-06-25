@@ -740,7 +740,7 @@ ok "M10 完成 → $M10_JSON"
 log "M11 分享與遠端存取..."
 M11_JSON="$DATA_DIR/m11_sharing.json"
 python3 - "$M11_JSON" <<'PYEOF'
-import sys, json, socket, subprocess
+import sys, os, json, socket, subprocess
 from datetime import datetime
 
 def port_open(port, host="127.0.0.1", timeout=1.0):
@@ -773,15 +773,69 @@ def run(cmd):
 auto_login_user = run("defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null")
 auto_login = bool(auto_login_user) and "does not exist" not in auto_login_user.lower()
 
+# ── Tailscale 偵測(VPN/mesh 對外暴露,不在那 5 個 Apple 服務內)──
+def find_tailscale():
+    for c in ["/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+              "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"]:
+        if os.path.exists(c):
+            return c
+    p = run("command -v tailscale 2>/dev/null")
+    return p if p else ""
+ts_bin = find_tailscale()
+ts_running = bool(run("pgrep -x tailscaled") or run("pgrep -f 'Tailscale.app'"))
+ts_serve  = run(f"'{ts_bin}' serve status 2>/dev/null") if ts_bin else ""
+ts_funnel = run(f"'{ts_bin}' funnel status 2>/dev/null") if ts_bin else ""
+def _proxy_active(out):
+    o = (out or "").strip().lower()
+    return bool(o) and "no serve" not in o and "no funnel" not in o and "no config" not in o and "error" not in o[:6]
+tailscale = {
+  "installed": bool(ts_bin) or ts_running,
+  "running": ts_running,
+  "serve_active": _proxy_active(ts_serve),
+  "funnel_active": _proxy_active(ts_funnel),   # funnel = 暴露到公開網際網路!
+  "serve_raw": (ts_serve or "")[:1500],
+  "funnel_raw": (ts_funnel or "")[:1500],
+}
+
+# ── 綁在「非 loopback」介面的監聽埠(別的裝置/tailnet 碰得到的真實面)──
+lsof_out = run("lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null")
+external = []; seen = set()
+for line in lsof_out.split("\n")[1:]:
+    parts = line.split()
+    if len(parts) < 2:
+        continue
+    proc = parts[0]; nameaddr = parts[-1]
+    if "->" in nameaddr:
+        continue
+    if nameaddr.startswith("["):           # IPv6  [addr]:port
+        addr = nameaddr.split("]")[0].lstrip("[")
+        port = nameaddr.rsplit(":", 1)[-1]
+    elif ":" in nameaddr:                   # IPv4 addr:port
+        addr, port = nameaddr.rsplit(":", 1)
+    else:
+        continue
+    if addr in ("127.0.0.1", "::1", "localhost", ""):   # loopback 不算對外
+        continue
+    key = (proc, addr, port)
+    if key in seen:
+        continue
+    seen.add(key)
+    external.append({"proc": proc, "addr": addr, "port": port})
+external.sort(key=lambda x: x["proc"].lower())
+
 result = {
   "module": "M11", "scan_time": datetime.now().isoformat(),
   "services": services,
   "open_count": open_count,
   "auto_login": auto_login,
   "auto_login_user": auto_login_user if auto_login else "",
+  "tailscale": tailscale,
+  "external_listeners": external[:40],
+  "external_count": len(external),
 }
 json.dump(result, open(sys.argv[1], 'w'), ensure_ascii=False, indent=2)
-print(f"  → 對外存取服務開啟 {open_count}/5，自動登入：{'是('+auto_login_user+')' if auto_login else '否'}")
+ts_state = ('執行中' if ts_running else '未執行') + (f", serve={tailscale['serve_active']}, funnel={tailscale['funnel_active']}" if ts_running else "")
+print(f"  → 對外服務 {open_count}/5;Tailscale {ts_state};非 loopback 監聽 {len(external)} 個;自動登入：{'是' if auto_login else '否'}")
 PYEOF
 ok "M11 完成 → $M11_JSON"
 

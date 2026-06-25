@@ -239,20 +239,19 @@ m9_sysext_rows = "".join(f"<tr><td class='file-path'>{x}</td></tr>" for x in m9_
                  or "<tr><td class='ok'>無第三方 system extension(乾淨)</td></tr>"
 
 # ── M10 近期當機 ──────────────────────────────────────────────
-m10_7d   = (m10 or {}).get("count_7d", 0)
 m10_30d  = (m10 or {}).get("count_30d", 0)
 m10_panic= (m10 or {}).get("panic_count_30d", 0)
 m10_apps = (m10 or {}).get("apps", [])
 m10_worst = m10_apps[0] if m10_apps else None
-m10_worst_7d = (m10_worst or {}).get("count7", 0)
+m10_worst_30d = (m10_worst or {}).get("count", 0)
 m10_app_rows = ""
 for a in m10_apps:
-    hot = a.get("count7", 0) >= 5 or a.get("panic")
+    hot = a.get("count", 0) >= 5 or a.get("panic")
     badge = " <span class='hl-badge danger'>核心崩潰</span>" if a.get("panic") else ""
     m10_app_rows += (f"<tr><td class=\"{'warn' if hot else ''}\">{a.get('app','')}{badge}</td>"
-                     f"<td class='num'>{a.get('count',0)}</td><td class='num'>{a.get('count7',0)}</td>"
+                     f"<td class='num'>{a.get('count',0)}</td>"
                      f"<td class='muted'>{a.get('kinds','')}</td><td class='muted'>{a.get('last','')}</td></tr>")
-m10_app_rows = m10_app_rows or "<tr><td colspan='5' class='empty'>近 30 天無當機紀錄</td></tr>"
+m10_app_rows = m10_app_rows or "<tr><td colspan='4' class='empty'>近 30 天無當機紀錄</td></tr>"
 m10_recent_rows = "".join(
     f"<tr><td>{r.get('app','')}</td><td>{r.get('kind','')}</td><td class='muted'>{r.get('date','')}</td>"
     f"<td class='muted'>{r.get('scope','')}</td></tr>" for r in (m10 or {}).get("recent", [])
@@ -274,6 +273,26 @@ m11_rows = "".join(
     f"<td class='num'>{s.get('port','')}</td><td>{_m11_badge(s.get('state'))}</td>"
     f"<td class='muted'>{s.get('risk','')}</td></tr>" for s in m11_services
 ) or "<tr><td colspan='4' class='empty'>無資料</td></tr>"
+
+# Tailscale 與「非 loopback 監聽埠」(真實對外存取面,超出那 5 個 Apple 服務)
+m11_ts = (m11 or {}).get("tailscale", {})
+m11_ts_running = m11_ts.get("running", False)
+m11_ts_serve   = m11_ts.get("serve_active", False)
+m11_ts_funnel  = m11_ts.get("funnel_active", False)
+m11_ext = (m11 or {}).get("external_listeners", [])
+m11_ext_n = (m11 or {}).get("external_count", 0)
+m11_ext_rows = "".join(
+    f"<tr><td>{e.get('proc','')}</td><td class='file-path'>{e.get('addr','')}</td><td class='num'>{e.get('port','')}</td></tr>"
+    for e in m11_ext
+) or "<tr><td colspan='3' class='empty'>無服務綁在非 loopback(外部裝置碰不到)✓</td></tr>"
+if not m11_ts_running:
+    m11_ts_summary, m11_ts_cls = "未執行", "ok"
+elif m11_ts_funnel:
+    m11_ts_summary, m11_ts_cls = "Funnel 對公網暴露!", "danger"
+elif m11_ts_serve:
+    m11_ts_summary, m11_ts_cls = "Serve 對 tailnet 暴露", "warn"
+else:
+    m11_ts_summary, m11_ts_cls = "執行中 · 未對外代理", "info"
 
 # ── 修復規則登錄表 (rule registry) ────────────────────────────
 # 「掃描結果 → 修復計畫」的單一對照表。報告產生時逐條套用「當次掃描資料」,
@@ -392,8 +411,8 @@ RULES = [
    "title": lambda: f"近 30 天發生 {m10_panic} 次核心崩潰(整機重開)",
    "desc":"Kernel panic 代表系統層級崩潰、整台重新開機,常見原因是老舊驅動/核心擴充或硬體。請查 M10 崩潰來源,並更新或移除相關第三方擴充(見 M9 System Extensions)。",
    "action": None},
-  {"id":"frequent_crashes", "applies": lambda: m10_worst_7d >= 5, "sev":"warn", "icon":"pulse", "tab":10,
-   "title": lambda: f"{(m10_worst or {}).get('app','某 App')} 近 7 天當機 {m10_worst_7d} 次",
+  {"id":"frequent_crashes", "applies": lambda: m10_worst_30d >= 5, "sev":"warn", "icon":"pulse", "tab":10,
+   "title": lambda: f"{(m10_worst or {}).get('app','某 App')} 近 30 天當機 {m10_worst_30d} 次",
    "desc":"同一支程式反覆當機通常是它本身的問題(版本過舊/設定損壞),也會持續吃資源。建議更新或重裝該 App;若是你已不用的軟體,可考慮移除。不提供一鍵動作以免誤刪。",
    "action": None},
 
@@ -420,6 +439,14 @@ RULES = [
    "title": lambda: "已啟用開機自動登入",
    "desc":"自動登入代表開機不需密碼就進入你的帳號,筆電遺失或被他人開機即可直接存取你的資料。建議到「系統設定 → 鎖定畫面 → 自動以此身分登入」關閉。",
    "action": None},
+  {"id":"tailscale_funnel", "applies": lambda: bool(m11_ts_funnel), "sev":"danger", "icon":"share", "tab":11,
+   "title": lambda: "Tailscale Funnel 已對「公開網際網路」暴露服務",
+   "desc":"Funnel 會把你本機的服務開放給整個網際網路(不只你的 tailnet),風險很高。若非刻意,請用 `tailscale funnel off` 或在 Tailscale 設定關閉。",
+   "action": None},
+  {"id":"external_listeners", "applies": lambda: m11_ext_n > 0, "sev":"warn", "icon":"share", "tab":11,
+   "title": lambda: f"{m11_ext_n} 個服務綁在非 loopback(其他裝置/tailnet 可連)",
+   "desc":"這些服務沒有只綁 127.0.0.1,代表同網段或 tailnet(Tailscale)上的裝置可能連得到——超出那 5 個 Apple 內建分享服務的範圍。請到 M11 確認每個是不是你刻意開放的。",
+   "action": None},
 ]
 
 SEV_RANK = {"danger":0, "warn":1, "info":2}
@@ -440,8 +467,8 @@ if m7_smart and "verif" in str(m7_smart).lower():
     positives.append(f"硬碟 SMART 正常、可用空間 {m7_free}")
 if m9 and m9.get("filevault",{}).get("state")=="on":
     positives.append("FileVault 磁碟加密已開啟")
-if m10 and m10_7d == 0:
-    positives.append("近 7 天沒有 App 當機紀錄")
+if m10 and m10_30d == 0:
+    positives.append("近 30 天沒有 App 當機紀錄")
 if m11 and m11_open_n == 0 and not m11_autologin:
     positives.append("未開放遠端存取(SSH／螢幕共享／檔案共享皆關閉)、無自動登入")
 pos_html = "".join(f"<li>{ic('check','ic-ok')}<span>{p}</span></li>" for p in positives) or "<li class='muted'>—</li>"
@@ -495,9 +522,9 @@ overview = [
      "系統安全防線與待更新",
      "danger" if (m9_fw=="off") else ("warn" if m9_upd_n else "ok")),
   (10,"pulse","M10 近期當機",
-     f"近7天 {m10_7d} 筆 · 核心崩潰 {m10_panic}",
+     f"近30天 {m10_30d} 筆 · 核心崩潰 {m10_panic}",
      "App 與系統的崩潰紀錄",
-     "danger" if m10_panic else ("warn" if m10_worst_7d >= 5 else ("info" if m10_7d else "ok"))),
+     "danger" if m10_panic else ("warn" if m10_worst_30d >= 5 else ("info" if m10_30d else "ok"))),
   (11,"share","M11 分享存取",
      f"對外服務開啟 {m11_open_n}/5" + (" · 自動登入" if m11_autologin else ""),
      "遠端登入與分享攻擊面",
@@ -524,11 +551,13 @@ FINDING = {
   "kernel_panic":"核心崩潰(panic)", "frequent_crashes":"App 反覆當機", "high_cpu":"程序高 CPU 占用",
   "screen_sharing_on":"螢幕共享開啟", "remote_login_on":"遠端登入開啟",
   "other_sharing_on":"其他分享服務開啟", "auto_login_on":"開機自動登入",
+  "tailscale_funnel":"Tailscale Funnel 對公網暴露", "external_listeners":"服務綁非 loopback(外部可達)",
 }
 MANUAL = {"smart_fail":"硬體 · 僅警示", "battery_health":"硬體 · 僅警示", "sip_off":"需 Recovery 模式",
           "dupes":"刪檔需取捨", "large_files":"需自行判斷", "third_party_agents":"需逐一判斷",
           "kernel_panic":"硬體/驅動 · 僅警示", "frequent_crashes":"更新/移除該 App", "high_cpu":"快照 · 僅警示",
-          "other_sharing_on":"到系統設定關閉", "auto_login_on":"到系統設定關閉"}
+          "other_sharing_on":"到系統設定關閉", "auto_login_on":"到系統設定關閉",
+          "tailscale_funnel":"tailscale funnel off", "external_listeners":"需逐一確認"}
 cov_active = 0
 cov_rows = ""
 for r in RULES:
@@ -920,16 +949,15 @@ HTML = f"""<!DOCTYPE html>
 <!-- M10 Panel -->
 <div class="panel" id="p10">
   <div class="panel-head">{ic('pulse')}M10 近期當機</div>
-  {note("彙整 macOS 自動保存的崩潰／診斷報告(~/Library/Logs/DiagnosticReports 與系統目錄),依 App 統計近 30 天／近 7 天的當機次數。同一支程式反覆當機通常是它本身的問題;『核心崩潰(panic)』則是系統層級、會整台重開,多與老舊驅動或 System Extension 有關。這頁只判讀、不自動刪除任何東西。")}
+  {note("彙整 macOS 自動保存的崩潰／診斷報告(~/Library/Logs/DiagnosticReports 與系統目錄),依 App 統計近 30 天的當機次數。同一支程式反覆當機通常是它本身的問題;『核心崩潰(panic)』則是系統層級、會整台重開,多與老舊驅動或 System Extension 有關。這頁只判讀、不自動刪除任何東西。")}
   <div class="cards" style="padding:0 0 8px;">
     <div class="card {'info' if m10_30d else 'ok'}"><div class="label">近 30 天當機報告</div><div class="value">{m10_30d}</div><div class="sub">所有 App 合計</div></div>
-    <div class="card {'warn' if m10_7d else 'ok'}"><div class="label">近 7 天</div><div class="value">{m10_7d}</div><div class="sub">最近一週</div></div>
     <div class="card {'danger' if m10_panic else 'ok'}"><div class="label">核心崩潰 (panic)</div><div class="value">{m10_panic}</div><div class="sub">整機重開 · 近 30 天</div></div>
     <div class="card info"><div class="label">最頻繁來源</div><div class="value" style="font-size:16px">{(m10_worst or {}).get('app','—')}</div><div class="sub">近 30 天 {(m10_worst or {}).get('count',0)} 次</div></div>
   </div>
   <div class="section-title">依 App 統計(近 30 天)</div>
   <div class="tbl-wrap"><table>
-    <thead><tr><th>程序 / App</th><th>30 天</th><th>7 天</th><th>類型</th><th>最近一次</th></tr></thead>
+    <thead><tr><th>程序 / App</th><th>30 天</th><th>類型</th><th>最近一次</th></tr></thead>
     <tbody>{m10_app_rows}</tbody>
   </table></div>
   <div class="section-title">最近 20 筆報告</div>
@@ -946,11 +974,19 @@ HTML = f"""<!DOCTYPE html>
   <div class="cards" style="padding:0 0 8px;">
     <div class="card {'warn' if m11_open_n else 'ok'}"><div class="label">對外服務開啟</div><div class="value">{m11_open_n}<span style="font-size:15px;color:var(--muted)"> / 5</span></div><div class="sub">越少越安全</div></div>
     <div class="card {'warn' if m11_autologin else 'ok'}"><div class="label">開機自動登入</div><div class="value" style="font-size:20px">{'是' if m11_autologin else '否'}</div><div class="sub">遺失時免密碼進入</div></div>
+    <div class="card {m11_ts_cls}"><div class="label">Tailscale</div><div class="value" style="font-size:16px">{'執行中' if m11_ts_running else '未執行'}</div><div class="sub">{m11_ts_summary}</div></div>
+    <div class="card {'warn' if m11_ext_n else 'ok'}"><div class="label">非 loopback 監聽</div><div class="value">{m11_ext_n}</div><div class="sub">外部裝置可達的服務</div></div>
   </div>
-  <div class="section-title">遠端存取 / 分享服務</div>
+  <div class="section-title">遠端存取 / 分享服務(Apple 內建)</div>
   <div class="tbl-wrap"><table>
     <thead><tr><th>服務</th><th>通訊埠</th><th>狀態</th><th>風險說明</th></tr></thead>
     <tbody>{m11_rows}</tbody>
+  </table></div>
+  <div class="section-title">綁在非 loopback 的監聽埠(其他裝置 / Tailscale tailnet 可連)</div>
+  {note("這裡列出「沒有只綁 127.0.0.1」的服務——同網段或 tailnet 上的裝置可能連得到,涵蓋非 Apple 的服務(例如自架伺服器)。空白代表所有服務都只綁本機、外部碰不到。注意:Tailscale 的 serve/funnel 即使服務只綁本機也可能把它代理出去,請一併看上方 Tailscale 狀態(Funnel = 對公開網際網路,風險最高)。")}
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>程序</th><th>綁定位址</th><th>通訊埠</th></tr></thead>
+    <tbody>{m11_ext_rows}</tbody>
   </table></div>
 </div>
 
