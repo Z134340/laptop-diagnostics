@@ -6,7 +6,7 @@ app_server.py — Laptop Diagnostics 一站式網頁應用(給非技術使用者
 啟動:python3 app_server.py(通常由「開始體檢.command」雙擊啟動)
 安全:僅綁 127.0.0.1、token 驗證;修復動作沿用 repair_server 的白名單,執行當下再驗證現況。
 """
-import http.server, socketserver, json, os, subprocess, secrets, threading, re, webbrowser, sys
+import http.server, socketserver, json, os, subprocess, secrets, threading, re, webbrowser, sys, socket, urllib.request
 from pathlib import Path
 
 import repair_server as rs   # 重用白名單修復動作與 sh()
@@ -178,9 +178,40 @@ class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+def _is_macvitals(port):
+    """該埠是否已有一個 MacVitals 在跑(背景常駐服務或上次未關的實例)。"""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+def _free_port(start, n=20):
+    """從 start 起找一個可綁定的埠;找不到回 None。"""
+    for p in range(start, start + n):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", p)); s.close(); return p
+        except OSError:
+            s.close()
+    return None
+
 def main():
-    with ThreadingServer(("127.0.0.1", PORT), Handler) as httpd:
+    # 若 8788 已有 MacVitals 在跑(例如背景常駐服務),不要再起第二個——直接開瀏覽器。
+    if _is_macvitals(PORT):
         url = f"http://127.0.0.1:{PORT}/"
+        print("MacVitals 已在背景執行中,直接為你開啟報告頁,不需重複啟動。")
+        if not os.environ.get("DIAG_NO_BROWSER"):
+            try: webbrowser.open(url)
+            except Exception: pass
+        return
+    port = _free_port(PORT)
+    if port is None:
+        print(f"連接埠 {PORT} 起算都被佔用,請關閉其他視窗或重開機後再試。")
+        return
+    with ThreadingServer(("127.0.0.1", port), Handler) as httpd:
+        url = f"http://127.0.0.1:{port}/"
         print("=" * 56)
         print("  電腦健康體檢 已啟動")
         print(f"  請在瀏覽器操作:{url}")

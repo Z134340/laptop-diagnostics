@@ -7,7 +7,7 @@ repair_server.py — Laptop Diagnostics 本機修復伺服器
 啟動：python3 repair_server.py   (預設 http://127.0.0.1:8787，會自動開瀏覽器)
 安全：僅綁定 127.0.0.1；每次請求需比對啟動時隨機產生的 token；只執行下列白名單動作。
 """
-import http.server, socketserver, json, os, subprocess, secrets, webbrowser, sys, socket
+import http.server, socketserver, json, os, subprocess, secrets, webbrowser, sys, socket, urllib.request
 from pathlib import Path
 
 PORT   = 8787
@@ -246,12 +246,39 @@ class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+def _is_macvitals(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+def _free_port(start, n=20):
+    for p in range(start, start + n):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", p)); s.close(); return p
+        except OSError:
+            s.close()
+    return None
+
 def main():
     if not INDEX.exists():
         print("找不到 report/index.html，請先執行 python3 generate_report.py")
         sys.exit(1)
-    with ThreadingServer(("127.0.0.1", PORT), Handler) as httpd:
+    if _is_macvitals(PORT):
         url = f"http://127.0.0.1:{PORT}/"
+        print("修復伺服器已在執行中,直接為你開啟報告頁。")
+        try: webbrowser.open(url)
+        except Exception: pass
+        return
+    port = _free_port(PORT)
+    if port is None:
+        print(f"連接埠 {PORT} 起算都被佔用,請關閉其他視窗後再試。")
+        return
+    with ThreadingServer(("127.0.0.1", port), Handler) as httpd:
+        url = f"http://127.0.0.1:{port}/"
         print("=" * 56)
         print("  Laptop Diagnostics 修復伺服器已啟動")
         print(f"  報告網址：{url}")
