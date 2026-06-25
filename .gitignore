@@ -20,3 +20,6 @@ laptop-diagnostics-portable.zip
 
 # ── 手冊原始截圖(含本機彙總數據;手冊 .docx 本身已納入版控)──
 manual_assets/
+
+# 根目錄殘留截圖
+*.png
