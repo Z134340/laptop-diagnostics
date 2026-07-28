@@ -12,18 +12,40 @@ from pathlib import Path
 import repair_server as rs   # 重用白名單修復動作與 sh()
 
 PORT  = 8788
-BASE  = Path(__file__).parent
-INDEX = BASE / "report" / "index.html"
+_LAUNCH_BASE = Path(__file__).resolve().parent
 TOKEN = secrets.token_hex(16)
+
+def base_dir():
+    """診斷腳本與報告所在的目錄。
+
+    `__file__` 是「啟動當下」的絕對路徑,常駐服務跑好幾週後若整個專案被搬家,
+    這個值就失準了(行程的 cwd 會跟著 inode 一起搬,`__file__` 不會)。
+    因此以「找得到 diagnose.sh」為準:先看啟動路徑,再用目前的 cwd 當後援。
+    """
+    for cand in (_LAUNCH_BASE, Path.cwd()):
+        if (cand / "diagnose.sh").is_file():
+            return cand
+    return _LAUNCH_BASE
+
+def index_path():
+    return base_dir() / "report" / "index.html"
 
 scan = {"running": False, "done": False, "error": "", "step": "尚未開始", "pct": 0}
 
 def run_scan():
     scan.update(running=True, done=False, error="", step="準備中…", pct=2)
     try:
-        p = subprocess.Popen(["bash", "diagnose.sh"], cwd=str(BASE),
+        base = base_dir()
+        if not (base / "diagnose.sh").is_file():
+            scan.update(running=False, error=(
+                f"找不到 diagnose.sh(目前目錄:{base})。專案可能被搬移過;"
+                "請把服務指到新的路徑後重新啟動本機體檢服務。")); return
+        tail = []
+        p = subprocess.Popen(["bash", "diagnose.sh"], cwd=str(base),
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for line in p.stdout:
+            tail.append(line.rstrip())
+            del tail[:-12]
             if "fdupes" in line and "安裝" in line:
                 scan.update(step="準備工具 (fdupes)…", pct=5)
             mok = re.search(r'M(\d{1,2}) 完成', line)
@@ -34,9 +56,12 @@ def run_scan():
                 n = int(mrun.group(1)); scan.update(step=f"掃描 M{n}…", pct=min(90, 5 + (n - 1) * 8))
         p.wait()
         if p.returncode != 0:
-            scan.update(running=False, error="診斷收集失敗,請看終端機視窗的訊息。"); return
+            # 這支服務多半由 launchd 背景常駐,沒有終端機視窗可看;把最後幾行輸出直接帶出來。
+            scan.update(running=False, error=(
+                f"診斷收集失敗(diagnose.sh 退出碼 {p.returncode},目錄 {base})。"
+                "最後訊息:" + " / ".join(t for t in tail[-4:] if t))); return
         scan.update(step="產生報告…", pct=95)
-        r = subprocess.run(["python3", "generate_report.py"], cwd=str(BASE), capture_output=True, text=True)
+        r = subprocess.run(["python3", "generate_report.py"], cwd=str(base), capture_output=True, text=True)
         if r.returncode != 0:
             scan.update(running=False, error="報告產生失敗:" + r.stderr[-200:]); return
         scan.update(running=False, done=True, step="完成", pct=100)
@@ -134,13 +159,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html", "/auto"):
             auto = "1" if self.path == "/auto" else "0"
             html = (LANDING.replace("__TOKEN__", TOKEN)
-                          .replace("__HASREPORT__", "inline-flex" if INDEX.exists() else "none")
+                          .replace("__HASREPORT__", "inline-flex" if index_path().exists() else "none")
                           .replace("__AUTO__", auto))
             return self._send(200, html, "text/html; charset=utf-8")
         if self.path in ("/report", "/report/", "/report/index.html"):
-            if not INDEX.exists():
+            if not index_path().exists():
                 self.send_response(302); self.send_header("Location", "/"); self.end_headers(); return
-            html = INDEX.read_text().replace("<!--REPAIR_HOOK-->",
+            html = index_path().read_text().replace("<!--REPAIR_HOOK-->",
                    f'<script>window.__REPAIR__={{"token":"{TOKEN}","enabled":true}};</script>')
             return self._send(200, html, "text/html; charset=utf-8")
         if self.path == "/api/scan/status":
