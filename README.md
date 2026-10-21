@@ -47,7 +47,7 @@ open report/index.html     # 3) 純檢視
 python3 repair_server.py   # 4)(選用)啟動修復伺服器 http://127.0.0.1:8787
 ```
 
-> 第一次會自動安裝 `fdupes`(若未裝)。M3 全碟掃描最慢,整體約數分鐘。
+> 不需安裝額外工具。M1 重複檔比對與 M3 全碟掃描最慢,整體約數分鐘。
 
 ## 檔案
 
@@ -55,6 +55,7 @@ python3 repair_server.py   # 4)(選用)啟動修復伺服器 http://127.0.0.1:87
 |---|---|
 | `run.sh` | 標準入口,串起診斷→產報告(→可選修復伺服器) |
 | `diagnose.sh` | 十一模組唯讀收集,寫入 `report/data/m{1..11}_*.json` |
+| `m1_dupes.py` | M1 重複檔比對(純 Python:大小分桶 → 前 64 KB hash → 全檔 hash) |
 | `generate_report.py` | 讀 JSON,產出 `report/index.html`(含修復規則表) |
 | `repair_server.py` | 本機白名單修復 API(僅 127.0.0.1 + token) |
 | `report/index.html` | 互動報告:摘要 + M1–M11 共 12 個分頁 |
@@ -63,7 +64,7 @@ python3 repair_server.py   # 4)(選用)啟動修復伺服器 http://127.0.0.1:87
 
 | ID | 名稱 | 內容 |
 |----|------|------|
-| M1 | 重複檔案 | `fdupes` 找內容相同的檔案 |
+| M1 | 重複檔案 | 純 Python 逐位元組比對找內容相同的檔案(略過 symlink、hardlink 不重複計) |
 | M2 | 孤兒/損壞 | 斷裂 symlink(分沙盒範本/App 鎖檔/真殘留三類)+ `brew doctor` |
 | M3 | 大型檔案 | >100MB 檔案 Top 50,附白話用途說明 |
 | M4 | 開發環境 | node/python/git… 版本 + brew/pip/npm 過時清單 |
@@ -93,4 +94,7 @@ python3 repair_server.py   # 4)(選用)啟動修復伺服器 http://127.0.0.1:87
 - 改 `diagnose.sh` 後務必 `bash run.sh` 完整跑一次驗證(`set -euo pipefail` 下,任一模組的 python 例外會中止整支)。
 - **資料契約**:`diagnose.sh` 產出的 JSON 欄位要對齊 `generate_report.py` 讀取的欄位;改一邊就兩邊一起改。
 - 新增一種修復 = 加 1 條 `RULES`(generate_report.py)+ 1 個白名單動作(repair_server.py),並確保兩邊 action id 一致。
+- `diagnose.sh` 內的 python heredoc 一律 `<<'PYEOF'`(加引號);掃描資料走暫存檔或 argv,**不要內插進 Python 原始碼**(檔名含 `\N`、`"""` 會讓整支中止,且可注入程式碼)。
+- `generate_report.py` 裡所有來自掃描資料的字串(檔名、指令輸出、程序名…)放進 HTML 前都要經過 `e()`(html.escape)。
+- 測試:`python3 -m unittest discover -s tests -v`(純標準函式庫,不需安裝任何套件)。
 - 更多判讀經驗見 `.claude/skills/laptop-diagnostics/SKILL.md`。

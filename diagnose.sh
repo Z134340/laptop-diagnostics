@@ -27,166 +27,13 @@ echo "======================================================"
 echo ""
 
 # ─────────────────────────────────────────────────────────────
-# 前置：安裝 fdupes（若未安裝）
+# M1：重複檔案(純 Python 比對,見 m1_dupes.py;不依賴 fdupes)
+#   大小分桶 → 前 64 KB hash → 全檔 hash;略過 symlink、hardlink 不重複計算
 # ─────────────────────────────────────────────────────────────
-log "檢查 fdupes..."
-if ! command -v fdupes &>/dev/null; then
-  warn "fdupes 未安裝，嘗試 brew install fdupes..."
-  if command -v brew &>/dev/null; then
-    brew install fdupes
-    ok "fdupes 安裝完成"
-  else
-    err "Homebrew 不存在，M1 模組將使用備用 md5 方法"
-    FDUPES_AVAILABLE=false
-  fi
-else
-  FDUPES_AVAILABLE=true
-  ok "fdupes 已就緒：$(fdupes --version 2>&1 | head -1)"
-fi
-
-# ─────────────────────────────────────────────────────────────
-# M1：重複檔案
-# ─────────────────────────────────────────────────────────────
-log "M1 重複檔案掃描（範圍：~，排除 .Trash / node_modules / .git）..."
+log "M1 重複檔案掃描（範圍：~，排除 .Trash / node_modules / .git / 各類快取）..."
 
 M1_JSON="$DATA_DIR/m1_dupes.json"
-
-if [ "${FDUPES_AVAILABLE:-true}" = true ]; then
-  # fdupes 輸出：每個重複群組以空行分隔
-  TMPFILE=$(mktemp)
-  fdupes -rSn \
-    --exclude='.Trash' \
-    --exclude='node_modules' \
-    --exclude='.git' \
-    ~ 2>/dev/null > "$TMPFILE" || true
-
-  python3 - "$TMPFILE" "$M1_JSON" <<'PYEOF'
-import sys, json, os
-
-tmpfile = sys.argv[1]
-out     = sys.argv[2]
-
-groups = []
-current = []
-total_wasted = 0
-
-with open(tmpfile) as f:
-  for line in f:
-    line = line.rstrip('\n')
-    if line == '':
-      if len(current) >= 2:
-        try:
-          size = os.path.getsize(current[0])
-        except Exception:
-          size = 0
-        wasted = size * (len(current) - 1)
-        total_wasted += wasted
-        groups.append({
-          "files": current,
-          "size_bytes": size,
-          "count": len(current),
-          "wasted_bytes": wasted
-        })
-      current = []
-    else:
-      current.append(line)
-
-# 最後一組
-if len(current) >= 2:
-  try:
-    size = os.path.getsize(current[0])
-  except Exception:
-    size = 0
-  wasted = size * (len(current) - 1)
-  total_wasted += wasted
-  groups.append({
-    "files": current,
-    "size_bytes": size,
-    "count": len(current),
-    "wasted_bytes": wasted
-  })
-
-# 依浪費空間排序
-groups.sort(key=lambda x: x["wasted_bytes"], reverse=True)
-
-result = {
-  "module": "M1",
-  "scan_time": __import__('datetime').datetime.now().isoformat(),
-  "total_groups": len(groups),
-  "total_wasted_bytes": total_wasted,
-  "groups": groups[:200]   # 最多輸出 200 組避免 JSON 過大
-}
-with open(out, 'w') as f:
-  json.dump(result, f, ensure_ascii=False, indent=2)
-
-print(f"  → 重複群組：{len(groups)} 個，可釋空間：{total_wasted / 1024**3:.2f} GB")
-PYEOF
-
-  rm -f "$TMPFILE"
-else
-  # 備用：find + md5（較慢）
-  log "  使用備用 md5 方法（較慢，請稍候）..."
-  python3 - "$M1_JSON" <<'PYEOF'
-import os, hashlib, json
-from datetime import datetime
-from collections import defaultdict
-
-SCAN_ROOTS = [os.path.expanduser("~")]
-EXCLUDE = {'.Trash', 'node_modules', '.git', 'Library/Caches'}
-
-def md5_file(path, chunk=65536):
-    h = hashlib.md5()
-    try:
-        with open(path, 'rb') as f:
-            while True:
-                b = f.read(chunk)
-                if not b: break
-                h.update(b)
-        return h.hexdigest()
-    except Exception:
-        return None
-
-size_map = defaultdict(list)
-
-for root_dir in SCAN_ROOTS:
-    for dirpath, dirnames, filenames in os.walk(root_dir, followlinks=False):
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDE and not d.startswith('.')]
-        for fn in filenames:
-            fp = os.path.join(dirpath, fn)
-            try:
-                sz = os.path.getsize(fp)
-                if sz > 1024:
-                    size_map[sz].append(fp)
-            except Exception:
-                pass
-
-groups = []
-total_wasted = 0
-candidates = {sz: paths for sz, paths in size_map.items() if len(paths) > 1}
-
-for sz, paths in candidates.items():
-    hash_map = defaultdict(list)
-    for p in paths:
-        h = md5_file(p)
-        if h:
-            hash_map[h].append(p)
-    for h, dupes in hash_map.items():
-        if len(dupes) > 1:
-            wasted = sz * (len(dupes) - 1)
-            total_wasted += wasted
-            groups.append({"files": dupes, "size_bytes": sz, "count": len(dupes), "wasted_bytes": wasted})
-
-groups.sort(key=lambda x: x["wasted_bytes"], reverse=True)
-result = {
-  "module": "M1", "scan_time": datetime.now().isoformat(),
-  "total_groups": len(groups), "total_wasted_bytes": total_wasted,
-  "groups": groups[:200]
-}
-with open(sys.argv[1], 'w') as f:
-    json.dump(result, f, ensure_ascii=False, indent=2)
-print(f"  → 重複群組：{len(groups)} 個，可釋空間：{total_wasted / 1024**3:.2f} GB")
-PYEOF
-fi
+python3 "$SCRIPT_DIR/m1_dupes.py" "$M1_JSON" "$HOME"
 
 ok "M1 完成 → $M1_JSON"
 
@@ -197,26 +44,28 @@ log "M2 孤兒與損壞項目掃描..."
 
 M2_JSON="$DATA_DIR/m2_broken.json"
 
-# broken symlinks
-BROKEN_LINKS=$(find -L ~ -type l 2>/dev/null \
-  | grep -v '.Trash' \
-  | grep -v 'node_modules' \
-  | grep -v '.git' \
-  || true)
+# 斷裂 symlink 與 brew doctor 都先寫到暫存檔,再以 argv 交給 Python。
+# (以前是把 find 結果內插進 python heredoc 原始碼:檔名含 \N、\x 或 """ 會讓整支掃描 SyntaxError 中止,
+#  且可被構造的檔名注入程式碼。)
+M2_LINKS="$(mktemp)"; M2_BREW="$(mktemp)"
+trap 'rm -f "$M2_LINKS" "$M2_BREW"' EXIT
+find -L ~ \( -name .Trash -o -name node_modules -o -name .git \) -prune -o -type l -print0 2>/dev/null > "$M2_LINKS" || true
 
-# brew doctor
 if command -v brew &>/dev/null; then
-  BREW_DOCTOR=$(brew doctor 2>&1 || true)
+  brew doctor > "$M2_BREW" 2>&1 || true
 else
-  BREW_DOCTOR="Homebrew not found"
+  echo "Homebrew not found" > "$M2_BREW"
 fi
 
-python3 - "$M2_JSON" <<PYEOF
-import json, os
+python3 - "$M2_JSON" "$M2_LINKS" "$M2_BREW" <<'PYEOF'
+import sys, json, os
 from datetime import datetime
 
-broken = [p for p in """$BROKEN_LINKS""".strip().split('\n') if p] if """$BROKEN_LINKS""".strip() else []
-brew_raw = """$BREW_DOCTOR"""
+out, links_file, brew_file = sys.argv[1:4]
+with open(links_file, "rb") as f:
+    broken = [p.decode("utf-8", "replace") for p in f.read().split(b"\0") if p]
+with open(brew_file, encoding="utf-8", errors="replace") as f:
+    brew_raw = f.read()
 
 # ── 斷裂 symlink 三分類 ────────────────────────────────────────
 # 經驗：~/Library 下絕大多數「斷裂」symlink 是 macOS / App 的正常設計，
@@ -278,7 +127,7 @@ result = {
   "brew_issues": brew_issues,
   "brew_issues_count": len(brew_issues)
 }
-with open("$M2_JSON", 'w') as f:
+with open(out, 'w', encoding='utf-8') as f:
     json.dump(result, f, ensure_ascii=False, indent=2)
 print(f"  → 斷裂 symlink {len(broken)} 個：沙盒範本 {cats['sandbox_template']} / App 鎖檔 {cats['app_lock']} / 真殘留 {cats['stale']}(需處理)；Homebrew 問題 {len(brew_issues)} 項")
 PYEOF
@@ -351,8 +200,8 @@ collect() {
   eval "$cmd" 2>&1 || echo "not found / error"
 }
 
-python3 - "$M4_JSON" <<PYEOF
-import json, subprocess, shutil
+python3 - "$M4_JSON" <<'PYEOF'
+import sys, json, subprocess, shutil
 from datetime import datetime
 
 def run(cmd):
@@ -378,7 +227,8 @@ tools = {
 
 npm_doctor    = run("npm doctor") if shutil.which("npm") else "npm not found"
 brew_list     = run("brew list --versions") if shutil.which("brew") else "brew not found"
-pip_outdated  = run("pip3 list --outdated 2>/dev/null | head -20") if shutil.which("pip3") else "pip3 not found"
+pip_outdated_full = run("pip3 list --outdated 2>/dev/null") if shutil.which("pip3") else "pip3 not found"
+pip_outdated  = "\n".join(pip_outdated_full.split("\n")[:22])   # 報告只顯示表頭 + 前 20 列
 
 # node version managers
 nvm_versions  = run("ls ~/.nvm/versions/node 2>/dev/null || echo 'nvm not found'")
@@ -388,9 +238,13 @@ pyenv_versions= run("pyenv versions 2>/dev/null || echo 'pyenv not found'")
 brew_outdated_raw = run("brew outdated --quiet 2>/dev/null") if shutil.which("brew") else ""
 brew_outdated = [x for x in brew_outdated_raw.split("\n") if x.strip()] if brew_outdated_raw else []
 
-pip_lines = [l for l in pip_outdated.split("\n") if l.strip()]
-# 扣掉表頭兩行(Package/Version... 與 ---- 分隔線)
-pip_outdated_count = max(0, len([l for l in pip_lines if l and not l.startswith("Package") and not l.startswith("---")]))
+# 過舊套件名單(扣掉表頭兩行);pip 工具本身是否過舊另外標出 —
+# 規則表只在「pip 本身過舊」時才長「更新 pip」鈕,否則按了按鈕(只升 pip)項目永遠不會消失
+pip_lines = [l for l in pip_outdated_full.split("\n") if l.strip()] if shutil.which("pip3") else []
+pip_pkgs  = [l.split()[0] for l in pip_lines
+             if not l.startswith("Package") and not l.startswith("---") and not l.lower().startswith("warning")]
+pip_outdated_count = len(pip_pkgs)
+pip_self_outdated  = any(p.lower() == "pip" for p in pip_pkgs)
 
 npm_g_raw = run("npm outdated -g --parseable 2>/dev/null") if shutil.which("npm") else ""
 npm_global_outdated_count = len([x for x in npm_g_raw.split("\n") if x.strip()]) if npm_g_raw else 0
@@ -403,13 +257,15 @@ result = {
   "brew_installed_packages": brew_list,
   "pip_outdated": pip_outdated,
   "pip_outdated_count": pip_outdated_count,
+  "pip_self_outdated": pip_self_outdated,
+  "pip_outdated_packages": pip_pkgs[:50],
   "brew_outdated": brew_outdated,
   "brew_outdated_count": len(brew_outdated),
   "npm_global_outdated_count": npm_global_outdated_count,
   "nvm_versions": nvm_versions,
   "pyenv_versions": pyenv_versions
 }
-with open("$M4_JSON", 'w') as f:
+with open(sys.argv[1], 'w', encoding='utf-8') as f:
     json.dump(result, f, ensure_ascii=False, indent=2)
 print(f"  → 工具版本收集完成；brew 可升級 {len(brew_outdated)}、pip 過時 {pip_outdated_count}、npm 全域過時 {npm_global_outdated_count}")
 PYEOF
