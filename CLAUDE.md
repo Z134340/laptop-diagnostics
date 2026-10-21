@@ -11,8 +11,8 @@
 - 暫存資料寫入 `report/data/` 目錄，不寫到系統路徑（收集套件 `macvitals.collect` 唯一會寫的就是 `--data-dir`，預設 `report/data/`）
 
 ## 執行順序
-- **非技術使用者入口:雙擊 `開始體檢.command`** → 啟動 `app_server.py`(127.0.0.1:8788)→ 瀏覽器首頁按「開始體檢」→ 背景跑掃描+顯示進度 → 完成自動跳報告 → 報告內一鍵修復。打包用 `bash package.sh`(產出 `laptop-diagnostics-portable.zip`,**排除個人掃描資料**)。
-- **標準入口(開發/CLI,確保一致性)：`bash run.sh`**(= diagnose.sh → generate_report.py;`--serve` 連同啟動修復伺服器、`--open` 開純檢視報告)。
+- **非技術使用者入口:雙擊 `開始體檢.command`** → 啟動 `app_server.py`(**唯一的本機伺服器**,127.0.0.1:8788)→ 瀏覽器首頁按「開始體檢」→ 背景跑掃描+顯示進度 → 完成自動跳報告 → 報告內一鍵修復。打包用 `bash package.sh`(產出 `laptop-diagnostics-portable.zip`,**排除個人掃描資料**)。
+- **標準入口(開發/CLI,確保一致性)：`bash run.sh`**(= diagnose.sh → generate_report.py;`--serve` 連同啟動同一支本機伺服器 `app_server.py --report` 並直接開報告頁、`--open` 開純檢視報告)。
 - 手動分步:
   1. 不需安裝額外工具(M1 為純 Python 比對,不依賴 `fdupes`;整個收集套件只用標準函式庫,Apple 內建 python3 3.9 即可)
   2. `python3 -m macvitals.collect`(十一模組唯讀收集 → `report/data/*.json`;`bash diagnose.sh` 是它的薄殼,只多 banner 與顏色 log)
@@ -21,16 +21,18 @@
      - M1 / M3 / M9 最慢且互相獨立,並行;其餘依序。進度持續寫 `report/data/progress.json`
   3. `python3 generate_report.py` 生成 `report/index.html`(含 `error` 的模組:該分頁與摘要卡顯示「此模組收集失敗:…」,規則表對它視為未命中)
   4. 完成後回報十一模組摘要數字
-  5.(選用)`python3 repair_server.py` 啟動修復伺服器(127.0.0.1:8787),讓摘要頁「修復」按鈕能一鍵執行白名單修復;不啟動則為純唯讀檢視
+  5.(選用)`python3 app_server.py --report` 啟動本機伺服器(127.0.0.1:8788,與「開始體檢」是同一支)並直接開報告頁,讓摘要頁「修復」按鈕能一鍵執行白名單修復;不啟動則為純唯讀檢視
 - **一致性守則:改動 `macvitals/modules/*.py` 後,先 `python3 -m unittest discover -s tests -v`,再至少 `python3 -m macvitals.collect --only <該模組> && python3 generate_report.py` 看報告;改到 JSON 欄位就是改資料契約,`generate_report.py`(與 `tests/` fixture)要同步改。合併前以 `bash run.sh` 完整跑一次。**
 - 報告摘要頁版面固定順序:頁面說明 → 全部檢查模組一覽 → 整體判讀 → 需要你注意的事 → 運作良好的部分 → 修復涵蓋範圍。
 
-## 前端一鍵修復（repair_server.py）+ 規則登錄表
+## 本機伺服器(app_server.py)+ 一鍵修復白名單(repair_server.py)+ 規則登錄表
+- **只有一支本機伺服器 `app_server.py`**(127.0.0.1:8788,被占用就往後找空埠;`--port` 可改起始埠):同時提供首頁 `/`(開始體檢)、`POST /api/scan` + `GET /api/scan/status`(背景掃描與進度)、`/report`(報告,注入修復 token;沒有報告 → 302 到 `/`)、`/api/ping`、`POST /api/fix`。一套 `Handler`、一套守衛。啟動時先打 `/api/ping` 偵測同埠是否已有 MacVitals(有就只開瀏覽器不重複啟動);`DIAG_NO_BROWSER=1` 不自動開瀏覽器。
+- `repair_server.py` **不再自己起 HTTP**,是純函式庫:白名單 `ACTIONS`(頂層 dict,`scripts/check_doc_counts.py` 用 ast 數它)、`host_allowed`/`origin_allowed`/`SECURITY_HEADERS`、`sh()`。`python3 repair_server.py` 會轉呼叫 `app_server.main(["--report"])`。
 - **修復計畫由掃描結果動態產生**：`generate_report.py` 內有「規則登錄表 `RULES`」，每條 = `applies(掃描資料)→bool` ＋ 嚴重度 ＋ 對應 `action`。報告產生時逐條套用當次掃描,命中才長出按鈕(例:防火牆關才有開火牆鈕、pip 過舊才有更新 pip 鈕、brew 全最新則升級鈕自動消失)。新增一種修復 = 加一條規則 + 一個伺服器動作。
-- 靜態 HTML 無法直接執行修復，故 `repair_server.py` 提供白名單 API；按鈕按下 → confirm → POST `/api/fix` → 伺服器端**在執行當下重新驗證現況**後才執行(不吃報告快照,故舊報告頂多「無事可做」不會誤動)。
+- 靜態 HTML 無法直接執行修復，故本機伺服器提供白名單 API(`app_server.py` 的 `POST /api/fix`,動作定義在 `repair_server.py` 的 `ACTIONS`)；按鈕按下 → confirm → POST `/api/fix` → 伺服器端**在執行當下重新驗證現況**後才執行(不吃報告快照,故舊報告頂多「無事可做」不會誤動)。
 - 白名單動作（15）：`fix_path`/`brew_cleanup`/`clear_caches`/`clean_stale_symlinks`/`fix_m2`/`enable_firewall`/`open_software_update`/`brew_upgrade`/`update_pip`/`update_npm`/`thin_snapshots`/`open_filevault_settings`/`enable_gatekeeper`/`disable_remote_login`/`disable_screen_sharing`。
 - 覆蓋:規則表 27 條(其中 13 種可一鍵修復),涵蓋 M1–M11 各模組的可行動發現;健康/正常項目不觸發(掃到才出對應修復)。硬體類(電池老化、SMART 異常)、需重開機者(SIP)、當機/panic/高 CPU(只警示避免誤刪 App、誤殺執行中程序)與其他分享服務只導引、不一鍵;分享服務僅可逆的螢幕共享/遠端登入提供一鍵(port-probe 重驗 + `osascript ... with administrator privileges`)。
-- 安全：僅綁 `127.0.0.1`、每次請求比對啟動時隨機 token、只允許白名單；需權限者（防火牆）用 `osascript ... with administrator privileges` 跳原生授權；`update_pip` 只升 pip 本身且 `--user`，不動系統 Python；不做需重啟的系統更新（只開設定頁）。
+- 安全：僅綁 `127.0.0.1`;每個請求的 `Host` 必須是本機(擋 DNS rebinding)、POST 的 `Origin`/`Sec-Fetch-Site` 必須是本機(擋跨站 POST);POST 再比對啟動時隨機 token;每個回應帶 `SECURITY_HEADERS`(nosniff、no-referrer、no-store、CSP 只允許本機頁面 iframe);只允許白名單；需權限者（防火牆）用 `osascript ... with administrator privileges` 跳原生授權；`update_pip` 只升 pip 本身且 `--user`，不動系統 Python；不做需重啟的系統更新（只開設定頁）。
 
 ## 模組定義
 每個模組一支檔(`macvitals/modules/mNN_*.py`),提供 `MODULE`/`FILENAME`/`LABEL`/`START_MSG`、`collect() -> dict`、`summary(result) -> str`;`macvitals/collect.py` 的 `MODULES` 是固定順序的登錄表。
@@ -77,6 +79,6 @@
 - **M7 的即時資源 Top 必須在並行群組之後才跑**(collect.py 的順序刻意如此),否則快照會把掃描本身(python3/find 高 CPU)誤報成「程序高 CPU 占用」。
 - **Python 3.9 相容、只用標準函式庫**:不用 `match`、不用 `X | Y` 型別語法、不加第三方套件(Apple 內建 python3 就能跑)。CI(`.github/workflows/ci.yml`:macos-latest、`setup-python` 鎖 3.9)跑單元測試、`bash -n diagnose.sh`、`python3 -m macvitals.collect --only m6 m7 m8 m9 m11 && python3 generate_report.py` smoke。
 - **報告 HTML 跳脫**：`generate_report.py` 所有掃描資料字串都要過 `e()`（html.escape）。報告由本機伺服器提供且含修復 token，未跳脫的檔名可注入 script 直接呼叫 `/api/fix`。
-- **測試**：`python3 -m unittest discover -s tests -v`（純標準函式庫;`test_p0.py` P0 回歸、`test_collect.py` 收集隔離/`--only`/並行/進度檔/報告對失敗模組的呈現。會掃磁碟的模組在測試裡以 `unittest.mock` 換成假 `collect()`,不會真的全碟掃描）。
+- **測試**：`python3 -m unittest discover -s tests -v`（純標準函式庫;`test_p0.py` P0 回歸、`test_collect.py` 收集隔離/`--only`/並行/進度檔/報告對失敗模組的呈現、`test_server.py` 單一伺服器同時回 `/`、`/api/scan/status`、`/report`、`/api/fix` 與外來 Host/Origin 403、`repair_server.py` 只是函式庫、`python3 repair_server.py` 轉呼叫 `app_server`。會掃磁碟的模組在測試裡以 `unittest.mock` 換成假 `collect()`,不會真的全碟掃描）。
 - **效能**：M1 / M3 全碟掃描最慢(已與 M9 並行)；要單獨刷新某模組用 `python3 -m macvitals.collect --only mN`，別為了刷新而重跑整支。
 - **M4 版本**：brew 管理者以 `brew outdated` 為準；系統工具（Apple python3 3.9 / 系統 ruby 2.6 / Apple git）由 macOS 控管，不單獨升，開發改用 brew 版。node 大版本升級前先 `npm ls -g` 快照全域套件。
