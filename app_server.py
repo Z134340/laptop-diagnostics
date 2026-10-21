@@ -6,7 +6,7 @@ app_server.py — Laptop Diagnostics 一站式網頁應用(給非技術使用者
 啟動:python3 app_server.py(通常由「開始體檢.command」雙擊啟動)
 安全:僅綁 127.0.0.1、token 驗證;修復動作沿用 repair_server 的白名單,執行當下再驗證現況。
 """
-import http.server, socketserver, json, os, subprocess, secrets, threading, re, webbrowser, sys, socket, urllib.request
+import http.server, socketserver, json, os, subprocess, secrets, threading, time, webbrowser, sys, socket, urllib.request
 from pathlib import Path
 
 import repair_server as rs   # 重用白名單修復動作與 sh()
@@ -31,31 +31,62 @@ def base_dir():
 def index_path():
     return base_dir() / "report" / "index.html"
 
-scan = {"running": False, "done": False, "error": "", "step": "尚未開始", "pct": 0}
+scan = {"running": False, "done": False, "error": "", "step": "尚未開始", "pct": 0, "modules": {}}
+
+def progress_path(base=None):
+    """收集程式(python3 -m macvitals.collect)持續寫入的進度檔。"""
+    return (base or base_dir()) / "report" / "data" / "progress.json"
+
+def apply_progress(path):
+    """把 progress.json 的內容對應到 scan 狀態;檔案不存在或半截(正在寫)就略過,下次再讀。
+
+    收集端的 pct 是 0–100(依模組權重);這裡壓到 3–92,留 95 給「產生報告」、100 給完成。
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            prog = json.load(f)
+    except Exception:
+        return False
+    if not isinstance(prog, dict):
+        return False
+    try:
+        pct = int(prog.get("pct") or 0)
+    except Exception:
+        pct = 0
+    step = prog.get("message") or (f"掃描 {prog.get('step')}…" if prog.get("step") else "準備中…")
+    scan.update(step=step, pct=min(92, 3 + int(pct * 0.89)),
+                modules={"done": prog.get("done") or [], "running": prog.get("running") or [],
+                         "failed": prog.get("failed") or [], "total": prog.get("total") or 0})
+    return True
 
 def run_scan():
-    scan.update(running=True, done=False, error="", step="準備中…", pct=2)
+    scan.update(running=True, done=False, error="", step="準備中…", pct=2, modules={})
     try:
         base = base_dir()
         if not (base / "diagnose.sh").is_file():
             scan.update(running=False, error=(
                 f"找不到 diagnose.sh(目前目錄:{base})。專案可能被搬移過;"
                 "請把服務指到新的路徑後重新啟動本機體檢服務。")); return
+        prog = progress_path(base)
+        try:
+            prog.unlink()   # 清掉上次殘留的進度檔,避免一開始就顯示舊進度
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
         tail = []
         p = subprocess.Popen(["bash", "diagnose.sh"], cwd=str(base),
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        for line in p.stdout:
-            tail.append(line.rstrip())
-            del tail[:-12]
-            if "fdupes" in line and "安裝" in line:
-                scan.update(step="準備工具 (fdupes)…", pct=5)
-            mok = re.search(r'M(\d{1,2}) 完成', line)
-            mrun = re.search(r'M(\d{1,2}) ', line)
-            if mok:
-                n = int(mok.group(1)); scan.update(step=f"M{n} 完成", pct=min(92, 5 + n * 8))
-            elif mrun:
-                n = int(mrun.group(1)); scan.update(step=f"掃描 M{n}…", pct=min(90, 5 + (n - 1) * 8))
-        p.wait()
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+        def _drain():   # 只保留最後幾行,給失敗時的錯誤訊息用;進度改由 progress.json 提供
+            for line in p.stdout:
+                tail.append(line.rstrip())
+                del tail[:-12]
+        t = threading.Thread(target=_drain, daemon=True); t.start()
+        while p.poll() is None:
+            apply_progress(prog)
+            time.sleep(0.5)
+        t.join(timeout=2)
+        apply_progress(prog)
         if p.returncode != 0:
             # 這支服務多半由 launchd 背景常駐,沒有終端機視窗可看;把最後幾行輸出直接帶出來。
             scan.update(running=False, error=(

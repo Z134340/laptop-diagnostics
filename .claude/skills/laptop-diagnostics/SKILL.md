@@ -23,8 +23,8 @@ description: 對本機 macOS 執行十一模組「唯讀」診斷(M1 重複檔 /
 ## 執行流程
 0a. **非技術使用者:雙擊 `開始體檢.command`** → `app_server.py`(:8788)首頁按「開始體檢」→ 網頁顯示進度 → 完成自動跳報告 → 一鍵修復。`bash package.sh` 產可攜 zip(排除個人掃描資料 report/data 與 report/index.html)。
 0b. **標準入口(CLI):`bash run.sh`**(diagnose.sh → generate_report.py;`--serve` 連帶起修復伺服器、`--open` 開報告)。確保每次產出一致。
-1. `bash diagnose.sh` — 收集 → 寫 `report/data/m{1..11}_*.json`(M3 全碟掃描最慢,可背景跑;單獨刷新某模組就複用該模組邏輯)。
-   - **資料契約**:`diagnose.sh` 產出的 JSON 欄位必須對齊 `generate_report.py` 讀取的欄位(尤其 M4 的 `brew_outdated_count`/`pip_outdated_count`/`npm_global_outdated_count`、M6/M7/M9 給規則表用的狀態欄位)。改任一邊都要兩邊一起改並完整跑 `run.sh` 驗證。
+1. `python3 -m macvitals.collect`(或薄殼 `bash diagnose.sh`)— 收集 → 寫 `report/data/m{1..11}_*.json`(M1/M3/M9 並行;單獨刷新某模組用 `--only mN`;任一模組失敗只在它的 JSON 寫 `error`,其餘照跑)。
+   - **資料契約**:`macvitals/modules/*.py` 產出的 JSON 欄位必須對齊 `generate_report.py` 讀取的欄位(尤其 M4 的 `brew_outdated_count`/`pip_outdated_count`/`npm_global_outdated_count`、M6/M7/M9 給規則表用的狀態欄位)。改任一邊都要兩邊一起改並完整跑 `run.sh` 驗證。
    - 報告摘要頁固定順序:說明 → 十一模組一覽 → 整體判讀 → 需要你注意的事 → 運作良好 → 修復涵蓋範圍。
 2. `python3 generate_report.py` — 讀 JSON → 產 `report/index.html`。
 3. `open report/index.html`(純檢視);或 `python3 repair_server.py` 啟動本機修復伺服器後用 127.0.0.1:8787 開啟,摘要頁「修復」按鈕可一鍵執行。
@@ -37,10 +37,9 @@ description: 對本機 macOS 執行十一模組「唯讀」診斷(M1 重複檔 /
 - 覆蓋:`RULES` 27 條(其中 13 種可一鍵修復)對應 M1–M11 各模組發現;健康項目不觸發。硬體類(電池老化、SMART)與需 Recovery 者(SIP)只導引不一鍵;當機/panic/高 CPU 與其他分享服務也只警示,僅 M11 的螢幕共享/遠端登入提供一鍵關閉。新增修復 = 加 1 條規則 + 1 個伺服器動作 + 確保兩邊 id 一致。
 
 ## ⚠️ 已知陷阱(務必遵守)
-- **每個用到 `sys.argv` 的 python heredoc 都必須 `import sys`。** diagnose.sh 因 `set -euo pipefail`,任一模組的 python 例外(如 M3 漏 import sys)會讓整支腳本中止。改腳本後務必完整跑一次驗證。
-- **heredoc 一律加引號 `<<'PYEOF'`**，掃描資料走暫存檔／argv，絕不內插進 Python 原始碼（M2 曾把 `find` 結果塞進 `"""…"""`，檔名含 `\N` 就 SyntaxError 整支中止，且可被構造的檔名注入程式碼）。
+- **收集邏輯在 Python 套件 `macvitals/`(不再是 diagnose.sh 的 heredoc)**:`python3 -m macvitals.collect` 對每個模組 try/except,任一模組失敗只在該模組 JSON 寫 `error`、其餘照跑、exit code 仍 0;報告會標示失敗模組、規則視為未命中。改模組後先 `python3 -m unittest discover -s tests -v`。Python 3.9 相容、只用標準函式庫。掃描資料(檔名、指令輸出)一律當資料處理(bytes → `decode("utf-8","replace")`、subprocess list),不內插進程式碼或 shell 字串。
 - **報告 HTML 跳脫**：`generate_report.py` 所有掃描資料字串都要過 `e()`（html.escape）。報告由本機伺服器提供且含修復 token，未跳脫的檔名可注入 script 直接呼叫 `/api/fix`。
-- **不要重跑整支只為了刷新單一模組**:M3 全碟掃描很慢。要單獨刷新 M2,複用其 find + 分類邏輯寫該模組 JSON 即可。
+- **不要重跑整支只為了刷新單一模組**:`python3 -m macvitals.collect --only m2`(其餘模組 JSON 不動),再 `python3 generate_report.py`。
 
 ## M2 判讀指南(核心經驗)
 `find -L ~ -type l` 在 ~/Library 下常回報數千條「斷裂 symlink」,但**約 99.7% 是正常的**。務必分三類,只有第 3 類需處理:
