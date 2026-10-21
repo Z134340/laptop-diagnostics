@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================
 # run.sh — 一鍵跑完整流程,確保每次產出一致
-#   1) diagnose.sh  收集九模組資料 → report/data/*.json
+#   1) diagnose.sh  收集十一模組資料 → report/data/*.json
 #   2) generate_report.py  產生 report/index.html
 #   3)(選用 --serve)啟動 repair_server.py 提供一鍵修復
 #

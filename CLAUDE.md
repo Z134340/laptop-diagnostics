@@ -1,7 +1,7 @@
 # Laptop Diagnostics — Claude Code 任務說明
 
 ## 目標
-對本機 macOS 執行四維度唯讀診斷，最終輸出 `report/index.html` 互動式報告。
+對本機 macOS 執行十一模組唯讀診斷，最終輸出 `report/index.html` 互動式報告。
 
 ## 安全邊界（硬性限制）
 - **預設唯讀；診斷收集階段絕不刪除、移動、修改任何使用者檔案**
@@ -29,7 +29,7 @@
 - **修復計畫由掃描結果動態產生**：`generate_report.py` 內有「規則登錄表 `RULES`」，每條 = `applies(掃描資料)→bool` ＋ 嚴重度 ＋ 對應 `action`。報告產生時逐條套用當次掃描,命中才長出按鈕(例:防火牆關才有開火牆鈕、pip 過舊才有更新 pip 鈕、brew 全最新則升級鈕自動消失)。新增一種修復 = 加一條規則 + 一個伺服器動作。
 - 靜態 HTML 無法直接執行修復，故 `repair_server.py` 提供白名單 API；按鈕按下 → confirm → POST `/api/fix` → 伺服器端**在執行當下重新驗證現況**後才執行(不吃報告快照,故舊報告頂多「無事可做」不會誤動)。
 - 白名單動作（15）：`fix_path`/`brew_cleanup`/`clear_caches`/`clean_stale_symlinks`/`fix_m2`/`enable_firewall`/`open_software_update`/`brew_upgrade`/`update_pip`/`update_npm`/`thin_snapshots`/`open_filevault_settings`/`enable_gatekeeper`/`disable_remote_login`/`disable_screen_sharing`。
-- 覆蓋:規則表 24 條,涵蓋 M1–M11 各模組的可行動發現;健康/正常項目不觸發(掃到才出對應修復)。硬體類(電池老化、SMART 異常)、需重開機者(SIP)、當機/panic/高 CPU(只警示避免誤刪 App、誤殺執行中程序)與其他分享服務只導引、不一鍵;分享服務僅可逆的螢幕共享/遠端登入提供一鍵(port-probe 重驗 + `osascript ... with administrator privileges`)。
+- 覆蓋:規則表 27 條(其中 13 種可一鍵修復),涵蓋 M1–M11 各模組的可行動發現;健康/正常項目不觸發(掃到才出對應修復)。硬體類(電池老化、SMART 異常)、需重開機者(SIP)、當機/panic/高 CPU(只警示避免誤刪 App、誤殺執行中程序)與其他分享服務只導引、不一鍵;分享服務僅可逆的螢幕共享/遠端登入提供一鍵(port-probe 重驗 + `osascript ... with administrator privileges`)。
 - 安全：僅綁 `127.0.0.1`、每次請求比對啟動時隨機 token、只允許白名單；需權限者（防火牆）用 `osascript ... with administrator privileges` 跳原生授權；`update_pip` 只升 pip 本身且 `--user`，不動系統 Python；不做需重啟的系統更新（只開設定頁）。
 
 ## 模組定義
@@ -63,7 +63,7 @@
 - `report/data/m11_sharing.json`（`services` 各服務 port/state、`open_count`、`auto_login`）
 - `report/data/progress.json`（收集進度:`step`/`message`/`pct`/`done`/`running`/`failed`/`pending`/`timings`/`finished`;`app_server.py` 讀它畫進度條,不再猜 log 行）
 - 模組收集失敗時,該模組的 JSON 只有 `{"module": "M3", "scan_time": "…", "error": "<例外類型>: <訊息>"}`;`generate_report.py` 以 `error` 欄位為判斷依據
-- `report/index.html`（互動式，含十一個 tab、篩選器、可釋空間加總）
+- `report/index.html`（互動式，含 12 個分頁(摘要 + M1–M11)、篩選器、可釋空間加總）
 
 ## 經驗與判讀（重要，詳見 `.claude/skills/laptop-diagnostics/SKILL.md`）
 - **M2 斷裂 symlink 約 99.7% 是正常的**，務必分三類，只有 `stale` 需處理：

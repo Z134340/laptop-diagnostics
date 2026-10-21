@@ -1,0 +1,10 @@
+{
+  "name": "macvitals-manual",
+  "private": true,
+  "scripts": {
+    "build:manual": "node build_manual.js"
+  },
+  "dependencies": {
+    "docx": "^9.13.0"
+  }
+}

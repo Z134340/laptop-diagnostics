@@ -61,7 +61,7 @@ children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after:
   children: [new TextRun({ text: "給所有人的操作說明(不需要懂電腦指令)", size: 22, color: "777777" })] }));
 children.push(IMG(A + "01_landing.png", 460));
 children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 320 },
-  children: [new TextRun({ text: "版本 1.1", size: 20, color: "999999" })] }));
+  children: [new TextRun({ text: "版本 1.3", size: 20, color: "999999" })] }));
 children.push(new Paragraph({ children: [new PageBreak()] }));
 
 // ===== 目錄 =====
@@ -238,4 +238,4 @@ const doc = new Document({
   }],
 });
 
-Packer.toBuffer(doc).then(buf => { fs.writeFileSync("MacVitals 使用手冊.docx", buf); console.log("OK"); });
+Packer.toBuffer(doc).then(buf => { fs.writeFileSync("MacVitals 使用手冊（白話版）.docx", buf); console.log("OK"); });

@@ -1,12 +1,12 @@
 ---
 name: laptop-diagnostics
-description: 對本機 macOS 執行多維度「唯讀」診斷(M1 重複檔 / M2 孤兒損壞 / M3 大型檔 / M4 開發環境 / M5 可回收空間 / M6 電池 / M7 系統健康 / M8 登入背景項目 / M9 安全與更新),產生 report/index.html 互動報告,並在使用者逐項授權後做安全修復。當使用者說「跑診斷 / 健檢這台 mac / 重複檔 / 斷裂 symlink / 大型檔案 / 開發環境版本 / 清理 / brew doctor / 電池 / 防火牆 / 登入項目 / 可回收空間 / 產生診斷報告」時使用。內含 M2 判讀指南與修復 playbook,避免把正常的系統 symlink 誤判為損壞。
+description: 對本機 macOS 執行十一模組「唯讀」診斷(M1 重複檔 / M2 孤兒損壞 / M3 大型檔 / M4 開發環境 / M5 可回收空間 / M6 電池 / M7 系統健康 / M8 登入背景項目 / M9 安全與更新 / M10 近期當機 / M11 分享與遠端存取),產生 report/index.html 互動報告,並在使用者逐項授權後做安全修復。當使用者說「跑診斷 / 健檢這台 mac / 重複檔 / 斷裂 symlink / 大型檔案 / 開發環境版本 / 清理 / brew doctor / 電池 / 防火牆 / 登入項目 / 可回收空間 / 當機 / 閃退 / 遠端登入 / 螢幕共享 / 產生診斷報告」時使用。內含 M2 判讀指南與修復 playbook,避免把正常的系統 symlink 誤判為損壞。
 ---
 
 # Laptop Diagnostics(macOS 唯讀診斷 + 受控修復)
 
 ## 用途
-在 macOS 上跑四維度唯讀診斷,輸出 `report/index.html`,再依使用者逐項確認做安全修復。
+在 macOS 上跑十一模組(M1–M11)唯讀診斷,輸出 `report/index.html`,再依使用者逐項確認做安全修復。
 
 ## 安全邊界(硬性)
 - 預設**唯讀**:收集階段只用 `find`(read-only)、Python 唯讀 hash 比對(`m1_dupes.py`,不依賴 fdupes)、`brew`(read-only 子指令)、`md5`/`shasum`。
@@ -15,28 +15,30 @@ description: 對本機 macOS 執行多維度「唯讀」診斷(M1 重複檔 / M2
 - 暫存資料只寫 `report/data/`。
 
 ## 模組
-- M1 重複檔 / M2 孤兒損壞(symlink+brew doctor) / M3 大型檔 / M4 開發環境(原始四維度)
+- M1 重複檔(純 Python `m1_dupes.py`:大小分桶 → 前 64 KB hash → 全檔 hash,**不再用 fdupes**) / M2 孤兒損壞(symlink+brew doctor) / M3 大型檔 / M4 開發環境
 - M5 可回收空間(各類快取/Trash/iOS 備份) / M6 電池 / M7 系統健康(SMART/記憶體/swap/APFS 快照) / M8 登入與背景項目(LaunchAgents/Daemons+登入項目,標出第三方自啟) / M9 安全與更新(FileVault/SIP/Gatekeeper/防火牆/待更新)
-- 全部唯讀;報告 `report/index.html` 為九個 tab。
+- M10 近期當機(掃 `DiagnosticReports`,依 App 聚合近 30 天閃退、標 kernel panic) / M11 分享與遠端存取(對 localhost 探聽 22/5900/445/548/3283 通訊埠 + 自動登入 + Tailscale;**勿用 `launchctl list` 判服務開關,會假陽性**)
+- 全部唯讀;報告 `report/index.html` 為 12 個分頁(摘要 + M1–M11)。
 
 ## 執行流程
 0a. **非技術使用者:雙擊 `開始體檢.command`** → `app_server.py`(:8788)首頁按「開始體檢」→ 網頁顯示進度 → 完成自動跳報告 → 一鍵修復。`bash package.sh` 產可攜 zip(排除個人掃描資料 report/data 與 report/index.html)。
 0b. **標準入口(CLI):`bash run.sh`**(diagnose.sh → generate_report.py;`--serve` 連帶起修復伺服器、`--open` 開報告)。確保每次產出一致。
 1. `python3 -m macvitals.collect`(或薄殼 `bash diagnose.sh`)— 收集 → 寫 `report/data/m{1..11}_*.json`(M1/M3/M9 並行;單獨刷新某模組用 `--only mN`;任一模組失敗只在它的 JSON 寫 `error`,其餘照跑)。
    - **資料契約**:`macvitals/modules/*.py` 產出的 JSON 欄位必須對齊 `generate_report.py` 讀取的欄位(尤其 M4 的 `brew_outdated_count`/`pip_outdated_count`/`npm_global_outdated_count`、M6/M7/M9 給規則表用的狀態欄位)。改任一邊都要兩邊一起改並完整跑 `run.sh` 驗證。
-   - 報告摘要頁固定順序:說明 → 九模組一覽 → 整體判讀 → 需要你注意的事 → 運作良好 → 修復涵蓋範圍。
+   - 報告摘要頁固定順序:說明 → 十一模組一覽 → 整體判讀 → 需要你注意的事 → 運作良好 → 修復涵蓋範圍。
 2. `python3 generate_report.py` — 讀 JSON → 產 `report/index.html`。
 3. `open report/index.html`(純檢視);或 `python3 repair_server.py` 啟動本機修復伺服器後用 127.0.0.1:8787 開啟,摘要頁「修復」按鈕可一鍵執行。
-4. 回報九模組摘要;需修復時有兩條路:(a) 對話中用 `mcp__visualize__show_widget` + `sendPrompt()` 逐項確認;(b) 報告內建修復按鈕(走 `repair_server.py` 白名單 API)。
+4. 回報十一模組摘要;需修復時有兩條路:(a) 對話中用 `mcp__visualize__show_widget` + `sendPrompt()` 逐項確認;(b) 報告內建修復按鈕(走 `repair_server.py` 白名單 API)。
 
 ## 報告 UI / 修復伺服器
-- 報告 `report/index.html`:摘要首頁(整體判讀 + 依風險排序的重點 + 模組總覽)+ M1–M9 分頁;全 inline SVG icon、每頁白話說明、M1/M3 檔案附「這是什麼」用途欄。
+- 報告 `report/index.html`:摘要首頁(整體判讀 + 依風險排序的重點 + 模組總覽)+ M1–M11 各一個分頁(共 12 個分頁);全 inline SVG icon、每頁白話說明、M1/M3 檔案附「這是什麼」用途欄。
 - **修復計畫動態產生**:`generate_report.py` 內「規則登錄表 `RULES`」(條件→修復對照),依當次掃描資料命中才長按鈕(防火牆關→開火牆鈕;pip 過舊→更新 pip 鈕;brew 全新→升級鈕消失)。擴充修復=加一條規則+一個伺服器動作。
-- `repair_server.py`:13 個白名單動作(`fix_path`/`brew_cleanup`/`clear_caches`/`clean_stale_symlinks`/`fix_m2`/`enable_firewall`/`open_software_update`/`brew_upgrade`/`update_pip`/`update_npm`/`thin_snapshots`/`open_filevault_settings`/`enable_gatekeeper`)。每個動作**執行當下重新驗證現況**(不吃報告快照,例:gatekeeper 已開→不跳密碼、0 快照→不處理)。僅綁 127.0.0.1、token 驗證;需權限者跳 `osascript ... administrator privileges`;`update_pip` 只升 pip 本身且 `--user`。
-- 覆蓋:`RULES` 17 條對應 M1–M9 各模組發現;健康項目不觸發。硬體類(電池老化、SMART)與需 Recovery 者(SIP)只導引不一鍵。新增修復 = 加 1 條規則 + 1 個伺服器動作 + 確保兩邊 id 一致。
+- `repair_server.py`:15 個白名單動作(`fix_path`/`brew_cleanup`/`clear_caches`/`clean_stale_symlinks`/`fix_m2`/`enable_firewall`/`open_software_update`/`brew_upgrade`/`update_pip`/`update_npm`/`thin_snapshots`/`open_filevault_settings`/`enable_gatekeeper`/`disable_remote_login`/`disable_screen_sharing`;`fix_m2` 是複合動作 = `clean_stale_symlinks` + `fix_path`)。每個動作**執行當下重新驗證現況**(不吃報告快照,例:gatekeeper 已開→不跳密碼、0 快照→不處理)。僅綁 127.0.0.1、token 驗證;需權限者跳 `osascript ... administrator privileges`;`update_pip` 只升 pip 本身且 `--user`。
+- 覆蓋:`RULES` 27 條(其中 13 種可一鍵修復)對應 M1–M11 各模組發現;健康項目不觸發。硬體類(電池老化、SMART)與需 Recovery 者(SIP)只導引不一鍵;當機/panic/高 CPU 與其他分享服務也只警示,僅 M11 的螢幕共享/遠端登入提供一鍵關閉。新增修復 = 加 1 條規則 + 1 個伺服器動作 + 確保兩邊 id 一致。
 
 ## ⚠️ 已知陷阱(務必遵守)
-- **收集邏輯在 Python 套件 `macvitals/`(不再是 diagnose.sh 的 heredoc)**:`python3 -m macvitals.collect` 對每個模組 try/except,任一模組失敗只在該模組 JSON 寫 `error`、其餘照跑、exit code 仍 0;報告會標示失敗模組、規則視為未命中。改模組後先 `python3 -m unittest discover -s tests -v`。Python 3.9 相容、只用標準函式庫。
+- **收集邏輯在 Python 套件 `macvitals/`(不再是 diagnose.sh 的 heredoc)**:`python3 -m macvitals.collect` 對每個模組 try/except,任一模組失敗只在該模組 JSON 寫 `error`、其餘照跑、exit code 仍 0;報告會標示失敗模組、規則視為未命中。改模組後先 `python3 -m unittest discover -s tests -v`。Python 3.9 相容、只用標準函式庫。掃描資料(檔名、指令輸出)一律當資料處理(bytes → `decode("utf-8","replace")`、subprocess list),不內插進程式碼或 shell 字串。
+- **報告 HTML 跳脫**：`generate_report.py` 所有掃描資料字串都要過 `e()`（html.escape）。報告由本機伺服器提供且含修復 token，未跳脫的檔名可注入 script 直接呼叫 `/api/fix`。
 - **不要重跑整支只為了刷新單一模組**:`python3 -m macvitals.collect --only m2`(其餘模組 JSON 不動),再 `python3 generate_report.py`。
 
 ## M2 判讀指南(核心經驗)

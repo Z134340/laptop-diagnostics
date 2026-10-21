@@ -1,4 +1,6 @@
-# Laptop Diagnostics
+# MacVitals(laptop-diagnostics)
+
+> **命名**:MacVitals 是產品名(介面、報告、使用手冊都用這個名字);`laptop-diagnostics` 是 GitHub repo、資料夾與 Claude Code skill 的名稱——兩者是同一個專案。
 
 對本機 macOS 執行**十一維度唯讀診斷**,產出單檔互動式報告 `report/index.html`;並可選擇性啟動本機**一鍵修復伺服器**,讓報告上的按鈕直接執行白名單修復。
 
@@ -83,12 +85,13 @@ python3 repair_server.py                  # 4)(選用)啟動修復伺服器 http
 
 ## 修復:掃到什麼 → 產出對應修復
 
-報告摘要頁有一張**修復規則表**(`generate_report.py` 內 `RULES`):依當次掃描結果,命中的問題才會在「需要你注意的事」長出對應按鈕(例:防火牆關才有開火牆鈕;pip 過舊才有更新 pip 鈕;都正常則按鈕自動消失)。可展開「修復涵蓋範圍」看全部 24 條規則(其中 13 種可一鍵修復)與本次命中狀況。
+報告摘要頁有一張**修復規則表**(`generate_report.py` 內 `RULES`):依當次掃描結果,命中的問題才會在「需要你注意的事」長出對應按鈕(例:防火牆關才有開火牆鈕;pip 過舊才有更新 pip 鈕;都正常則按鈕自動消失)。可展開「修復涵蓋範圍」看全部 27 條規則(其中 13 種可一鍵修復)與本次命中狀況。
 
-修復伺服器白名單動作(14)、每個都在執行當下重新驗證現況:
+修復伺服器白名單動作(15)、每個都在執行當下重新驗證現況:
 
-`fix_path` · `brew_cleanup` · `clear_caches` · `clean_stale_symlinks` · `enable_firewall` · `open_software_update` · `brew_upgrade` · `update_pip` · `update_npm` · `thin_snapshots` · `open_filevault_settings` · `enable_gatekeeper` · `disable_remote_login` · `disable_screen_sharing`
+`fix_path` · `brew_cleanup` · `clear_caches` · `clean_stale_symlinks` · `fix_m2` · `enable_firewall` · `open_software_update` · `brew_upgrade` · `update_pip` · `update_npm` · `thin_snapshots` · `open_filevault_settings` · `enable_gatekeeper` · `disable_remote_login` · `disable_screen_sharing`
 
+- `fix_m2` 是複合動作:依序執行 `clean_stale_symlinks` 與 `fix_path`。
 - 需密碼者(防火牆/Gatekeeper)會跳 macOS 原生授權視窗。
 - M11 對外服務(遠端登入 SSH、螢幕共享)若開著,可一鍵關閉以縮小攻擊面。
 - 硬體類(電池老化、SMART 異常)與需重開機者(SIP)只警示、不一鍵。
@@ -100,9 +103,40 @@ python3 repair_server.py                  # 4)(選用)啟動修復伺服器 http
 - **單一模組失敗不會中止掃描**:`macvitals.collect` 對每個模組 try/except,失敗只在該模組 JSON 寫 `error` 欄位、exit code 仍為 0;報告把該分頁與摘要卡標成「此模組收集失敗」、規則視為未命中。模組內遇到指令缺失/逾時請回傳字串資料(`base.run()` 已處理),真的異常就讓例外拋出,別吞成空資料。
 - **資料契約**:模組 JSON 的欄位名稱與結構要對齊 `generate_report.py` 讀取的欄位(以及 `tests/` 的 fixture);改一邊就兩邊一起改。
 - 新增一種修復 = 加 1 條 `RULES`(generate_report.py)+ 1 個白名單動作(repair_server.py),並確保兩邊 action id 一致。
+- 改了規則(`RULES`)或白名單動作(`ACTIONS`)後,跑 `python3 scripts/check_doc_counts.py`:它以程式碼為準,檢查 README / CLAUDE.md / SKILL.md / run.sh 裡寫的規則數、動作數、模組數是否一致(`tests/test_doc_counts.py` 也會跑它)。
 - 掃描資料(檔名、指令輸出)一律當資料處理:bytes → `decode("utf-8", "replace")`、subprocess list、固定指令字串;**不要內插進 Python 原始碼或 shell 字串**(檔名含 `\N`、`"""` 曾讓整支中止,且可注入程式碼)。
 - **Python 3.9 相容、只用標準函式庫**(Apple 內建 python3 就能跑):不用 `match`、不用 `X | Y` 型別語法、不加第三方套件。
 - 收集階段絕對唯讀:`macvitals.collect` 唯一會寫的是 `report/data/`(或 `--data-dir` 指定目錄)。
 - `generate_report.py` 裡所有來自掃描資料的字串(檔名、指令輸出、程序名…)放進 HTML 前都要經過 `e()`(html.escape)。
 - 測試:`python3 -m unittest discover -s tests -v`(純標準函式庫,不需安裝任何套件;會掃磁碟的模組在測試裡被換成假的,不會跑全碟掃描)。CI 在 `.github/workflows/ci.yml`。
 - 更多判讀經驗見 `.claude/skills/laptop-diagnostics/SKILL.md`。
+
+## 重建手冊
+
+`MacVitals 使用手冊（白話版）.docx` 由 `build_manual.js` 以 [`docx`](https://www.npmjs.com/package/docx) 套件產生(需要 Node.js):
+
+```bash
+npm install
+npm run build:manual
+```
+
+輸出檔是 repo 根目錄下**同名**的 `MacVitals 使用手冊（白話版）.docx`,會直接覆蓋。
+
+腳本會讀 `manual_assets/` 內的截圖。截圖含本機彙總數據,已被 `.gitignore` 排除、**不入版控**,需自行準備(用「開始體檢」截圖存成 PNG)。檔名如下,缺任何一張,腳本讀檔時就會報錯:
+
+| 檔案 | 內容 |
+|---|---|
+| `manual_assets/01_landing.png` | 首頁(封面與「雙擊開始體檢」段落共用) |
+| `manual_assets/02_progress.png` | 掃描進行中的進度條 |
+| `manual_assets/03_report_summary.png` | 報告摘要頁上半部(模組一覽 + 整體判讀) |
+| `manual_assets/05_module_m3.png` | M3 大型檔案分頁 |
+| `manual_assets/06_attention.png` | 「需要你注意的事」與右側修復按鈕 |
+| `manual_assets/07_coverage.png` | 「修復涵蓋範圍」對照表 |
+
+> ⚠️ 腳本產出的章節與內文,和已提交的 `.docx`(封面「版本 1.3 · 2026-06-25」)**並不相同**——已提交的那份較精簡,不是這支腳本的輸出。重建會覆蓋它;重建前請先確認以哪一份為準。
+
+`laptop-diagnostics 技術實作手冊.docx` 沒有建置腳本,是手工維護的。
+
+## 授權
+
+MIT,見 [LICENSE](LICENSE)。
