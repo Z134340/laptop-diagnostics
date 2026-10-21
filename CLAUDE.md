@@ -5,7 +5,7 @@
 
 ## 安全邊界（硬性限制）
 - **預設唯讀；診斷收集階段絕不刪除、移動、修改任何使用者檔案**
-- 所有收集操作僅限 `find`（read-only）、`fdupes`、`brew`（read-only subcommands）、`md5` / `shasum`
+- 所有收集操作僅限 `find`（read-only）、Python 唯讀 hash 比對（`m1_dupes.py`）、`brew`（read-only subcommands）、`md5` / `shasum`
 - **修復動作（刪 symlink、改 `~/.bash_profile`、`brew upgrade` 等）必須先逐項列出、取得使用者明確授權後才執行**；不得在授權範圍外動任何真實檔案
 - 若遇到需要 `sudo` 的指令，記錄「權限不足，跳過」，繼續下一步
 - 暫存資料寫入 `report/data/` 目錄，不寫到系統路徑
@@ -14,7 +14,7 @@
 - **非技術使用者入口:雙擊 `開始體檢.command`** → 啟動 `app_server.py`(127.0.0.1:8788)→ 瀏覽器首頁按「開始體檢」→ 背景跑掃描+顯示進度 → 完成自動跳報告 → 報告內一鍵修復。打包用 `bash package.sh`(產出 `laptop-diagnostics-portable.zip`,**排除個人掃描資料**)。
 - **標準入口(開發/CLI,確保一致性)：`bash run.sh`**(= diagnose.sh → generate_report.py;`--serve` 連同啟動修復伺服器、`--open` 開純檢視報告)。
 - 手動分步:
-  1. 安裝前置工具（`fdupes`，若未安裝）
+  1. 不需安裝額外工具（M1 已改為純 Python 比對，不依賴 `fdupes`）
   2. 執行 `diagnose.sh`（十一模組唯讀收集 → `report/data/*.json`）
   3. `python3 generate_report.py` 生成 `report/index.html`
   4. 完成後回報十一模組摘要數字
@@ -32,7 +32,7 @@
 ## 模組定義
 | ID | 名稱 | 核心指令 |
 |----|------|----------|
-| M1 | 重複檔案 | `fdupes -rSn ~ 2>/dev/null` |
+| M1 | 重複檔案 | `python3 m1_dupes.py <json> ~`（大小分桶 → 前 64 KB hash → 全檔 hash；略過 symlink、hardlink 不重複計） |
 | M2 | 孤兒/損壞項目 | `find -L ~ -type l ! -name .DS_Store 2>/dev/null`（broken symlinks）+ `brew doctor` |
 | M3 | 大型檔案 Top 50 | `find / -not \( -path /System -prune \) -not \( -path /private/var -prune \) -size +100M -type f 2>/dev/null` |
 | M4 | 開發環境健檢 | `node -v`, `npm doctor`, `python3 --version`, `brew list --versions` |
@@ -63,5 +63,8 @@
   - `stale`（其餘）：指向已刪目標的真殘留 → 可在授權下清理（刪前雙重確認 `islink` 且目標不存在，只 `unlink` 連結本身）
 - **`brew doctor` 多為 PATH 設定問題**（非壞檔）；修 `~/.bash_profile` 後須以 `bash -lc 'brew doctor'` 驗證（非 login shell 不讀 profile，會誤報）。
 - **腳本陷阱**：`diagnose.sh` 有 `set -euo pipefail`，任一 python heredoc 例外會中止全腳本。**每個用 `sys.argv` 的 heredoc 都要 `import sys`**（M3 曾因此中止）。改腳本後完整跑一次驗證。
+- **heredoc 一律加引號 `<<'PYEOF'`**，掃描資料走暫存檔／argv，絕不內插進 Python 原始碼（M2 曾把 `find` 結果塞進 `"""…"""`，檔名含 `\N` 就 SyntaxError 整支中止，且可被構造的檔名注入程式碼）。
+- **報告 HTML 跳脫**：`generate_report.py` 所有掃描資料字串都要過 `e()`（html.escape）。報告由本機伺服器提供且含修復 token，未跳脫的檔名可注入 script 直接呼叫 `/api/fix`。
+- **測試**：`python3 -m unittest discover -s tests -v`（純標準函式庫）。
 - **效能**：M3 全碟掃描最慢；要單獨刷新某模組就複用該模組邏輯，別為了刷新而重跑整支。
 - **M4 版本**：brew 管理者以 `brew outdated` 為準；系統工具（Apple python3 3.9 / 系統 ruby 2.6 / Apple git）由 macOS 控管，不單獨升，開發改用 brew 版。node 大版本升級前先 `npm ls -g` 快照全域套件。

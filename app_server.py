@@ -14,6 +14,7 @@ import repair_server as rs   # 重用白名單修復動作與 sh()
 PORT  = 8788
 _LAUNCH_BASE = Path(__file__).resolve().parent
 TOKEN = secrets.token_hex(16)
+BOUND_PORT = PORT   # 實際綁定的埠(main() 可能往後找空埠),供 Host/Origin 比對
 
 def base_dir():
     """診斷腳本與報告所在的目錄。
@@ -152,12 +153,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code); self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data))); self.end_headers()
+        self.send_header("Content-Length", str(len(data)))
+        for k, v in rs.SECURITY_HEADERS:
+            self.send_header(k, v)
+        self.end_headers()
         self.wfile.write(data)
 
+    def _guard(self, post=False):
+        """Host 不是本機 → 403(擋 DNS rebinding);POST 的 Origin 不是本機 → 403。"""
+        if not rs.host_allowed(self.headers, BOUND_PORT):
+            self._send(403, json.dumps({"ok": False, "message": "forbidden host"})); return False
+        if post and not rs.origin_allowed(self.headers, BOUND_PORT):
+            self._send(403, json.dumps({"ok": False, "message": "forbidden origin"})); return False
+        return True
+
     def do_GET(self):
+        if not self._guard(): return
         if self.path in ("/", "/index.html", "/auto"):
-            auto = "1" if self.path == "/auto" else "0"
+            # /auto(載入即開掃)只給本機來源:同源頁面、本機其他埠的控制台、使用者自己輸入網址。
+            # 外部網站連結/視窗開過來的(Sec-Fetch-Site: cross-site)只顯示首頁,不自動開掃。
+            sfs = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            auto = "1" if (self.path == "/auto" and sfs in ("", "none", "same-origin", "same-site")) else "0"
             html = (LANDING.replace("__TOKEN__", TOKEN)
                           .replace("__HASREPORT__", "inline-flex" if index_path().exists() else "none")
                           .replace("__AUTO__", auto))
@@ -165,7 +181,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path in ("/report", "/report/", "/report/index.html"):
             if not index_path().exists():
                 self.send_response(302); self.send_header("Location", "/"); self.end_headers(); return
-            html = index_path().read_text().replace("<!--REPAIR_HOOK-->",
+            html = index_path().read_text(encoding="utf-8").replace("<!--REPAIR_HOOK-->",
                    f'<script>window.__REPAIR__={{"token":"{TOKEN}","enabled":true}};</script>')
             return self._send(200, html, "text/html; charset=utf-8")
         if self.path == "/api/scan/status":
@@ -177,6 +193,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._send(404, "not found", "text/plain")
 
     def do_POST(self):
+        if not self._guard(post=True): return
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length) or "{}")
@@ -223,6 +240,7 @@ def _free_port(start, n=20):
     return None
 
 def main():
+    global BOUND_PORT
     # 若 8788 已有 MacVitals 在跑(例如背景常駐服務),不要再起第二個——直接開瀏覽器。
     if _is_macvitals(PORT):
         url = f"http://127.0.0.1:{PORT}/"
@@ -235,6 +253,7 @@ def main():
     if port is None:
         print(f"連接埠 {PORT} 起算都被佔用,請關閉其他視窗或重開機後再試。")
         return
+    BOUND_PORT = port
     with ThreadingServer(("127.0.0.1", port), Handler) as httpd:
         url = f"http://127.0.0.1:{port}/"
         print("=" * 56)

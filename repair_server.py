@@ -15,11 +15,41 @@ ROOT   = Path(__file__).parent / "report"
 INDEX  = ROOT / "index.html"
 HOME   = os.path.expanduser("~")
 TOKEN  = secrets.token_hex(16)
+BOUND_PORT = PORT          # 實際綁定的埠(main() 可能往後找空埠),供 Host/Origin 比對
+
+ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
+
+def host_allowed(headers, port):
+    """只接受 Host 指向本機的請求,擋 DNS rebinding(惡意網域解析到 127.0.0.1 後讀走 token)。"""
+    host = (headers.get("Host") or "").strip().lower()
+    name, _, hport = host.partition(":")
+    return name in ALLOWED_HOSTNAMES and (not hport or hport == str(port))
+
+def origin_allowed(headers, port):
+    """POST 必須來自本機頁面:有 Origin 就比對;沒帶 Origin 的瀏覽器跨站請求(看 Sec-Fetch-Site)也擋。
+    非瀏覽器客戶端(curl 等,兩個標頭都沒有)不受影響,仍需 token。"""
+    origin = (headers.get("Origin") or "").strip().lower()
+    if origin:
+        return origin in {f"http://{h}:{port}" for h in ALLOWED_HOSTNAMES}
+    sfs = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    return sfs in ("", "same-origin", "none")
+
+SECURITY_HEADERS = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+    ("Cache-Control", "no-store"),
+    # 只允許本機頁面(含不同埠的本機控制台)嵌入;外部網站不得 iframe 本服務
+    ("Content-Security-Policy",
+     "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+     "img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' http://127.0.0.1:* http://localhost:*"),
+)
 
 def sh(cmd, timeout=600):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return r.returncode, (r.stdout + r.stderr)
+    except subprocess.TimeoutExpired:
+        return 124, f"timeout after {timeout}s"
     except Exception as e:
         return 1, f"error: {e}"
 
@@ -54,7 +84,9 @@ def act_fix_path():
     return {"ok": True, "message": "已將 Homebrew 路徑寫入 ~/.bash_profile，新開終端機生效。"}
 
 def act_brew_cleanup():
-    sh("brew autoremove 2>&1"); sh("brew cleanup -s 2>&1")
+    c1, o1 = sh("brew autoremove 2>&1"); c2, o2 = sh("brew cleanup -s 2>&1")
+    if c1 != 0 or c2 != 0:
+        return {"ok": False, "message": "brew cleanup 未完成:" + (o1 + o2).strip()[-160:]}
     return {"ok": True, "message": "已執行 brew autoremove + cleanup，清除舊版本與孤兒相依。"}
 
 def act_clear_caches():
@@ -71,6 +103,9 @@ def act_clean_stale_symlinks():
     LOCK = {"SingletonLock", "SingletonCookie", "SingletonSocket", "RunningChromeVersion"}
     removed = []
     code, out = sh(f'find -L "{HOME}" -type l 2>/dev/null', timeout=180)
+    if code == 124 or out.startswith("error:"):
+        # find 逾時/失敗時 out 不是路徑清單;以前會把那串錯誤訊息當路徑跑一遍然後回報「已清理 0 條」
+        return {"ok": False, "message": "掃描家目錄逾時或失敗,未刪除任何連結,請稍後再試。"}
     for p in out.split("\n"):
         if not p or "/Library/Containers/" in p: continue
         base = os.path.basename(p)
@@ -110,15 +145,18 @@ def act_brew_upgrade():
     code, out = sh("brew upgrade 2>&1", timeout=1800)
     _, left = sh("brew outdated --quiet 2>/dev/null", timeout=60)
     remain = len([x for x in left.split("\n") if x.strip()])
-    return {"ok": True, "message": f"已升級 {len(pending)} 個 Homebrew 套件(尚餘 {remain} 個)。"}
+    done = max(0, len(pending) - remain)
+    if code != 0:
+        return {"ok": False, "message": f"brew upgrade 未完全成功(完成 {done} 個,尚餘 {remain} 個):" + out.strip()[-160:]}
+    return {"ok": True, "message": f"已升級 {done} 個 Homebrew 套件(尚餘 {remain} 個)。"}
 
 def act_update_pip():
     # 只升級 pip 工具本身，且安裝到使用者目錄，不動系統 Python(遵守安全邊界)
     code, out = sh("python3 -m pip install --user --upgrade pip 2>&1", timeout=180)
-    ok = "Successfully installed" in out or "already satisfied" in out or "already up-to-date" in out.lower()
-    ver = ""
     _, v = sh("python3 -m pip --version 2>/dev/null", timeout=20)
     ver = v.strip().split(" ")[1] if " " in v else ""
+    if code != 0:
+        return {"ok": False, "message": "pip 更新失敗:" + out.strip()[-160:]}
     return {"ok": True, "message": f"pip 已更新到最新({ver})。套件升級請於虛擬環境自行處理。"}
 
 def act_update_npm():
@@ -127,9 +165,13 @@ def act_update_npm():
     n0 = len([x for x in before.split("\n") if x.strip()])
     if n0 == 0:
         return {"ok": True, "message": "全域 npm 套件都已是最新,無需更新。"}
-    sh("npm update -g 2>&1", timeout=600)
+    code, out = sh("npm update -g 2>&1", timeout=600)
     _, after = sh("npm outdated -g --parseable 2>/dev/null", timeout=60)
     n1 = len([x for x in after.split("\n") if x.strip()])
+    if code != 0:
+        return {"ok": False, "message": f"npm update -g 失敗(尚餘 {n1} 個):" + out.strip()[-160:]}
+    if n1 >= n0:
+        return {"ok": False, "message": f"已執行 npm update -g,但仍有 {n1} 個套件未更新(可能需手動 npm install -g <套件>@latest)。"}
     return {"ok": True, "message": f"已更新全域 npm 套件({n0 - n1} 個完成,尚餘 {n1} 個)。"}
 
 def act_thin_snapshots():
@@ -137,9 +179,11 @@ def act_thin_snapshots():
     n = len([l for l in before.split("\n") if l.startswith("com.apple.")])
     if n == 0:
         return {"ok": True, "message": "目前沒有本機快照，無需處理。"}
-    sh("tmutil thinlocalsnapshots / 999999999999 4 2>&1", timeout=300)
+    code, out = sh("tmutil thinlocalsnapshots / 999999999999 4 2>&1", timeout=300)
     _, after = sh("tmutil listlocalsnapshots / 2>/dev/null", timeout=30)
     n2 = len([l for l in after.split("\n") if l.startswith("com.apple.")])
+    if code != 0:
+        return {"ok": False, "message": f"精簡快照未完成({n} → {n2} 個):" + out.strip()[-160:]}
     return {"ok": True, "message": f"已精簡本機快照({n} → {n2} 個)。"}
 
 def act_open_filevault_settings():
@@ -205,12 +249,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        for k, v in SECURITY_HEADERS:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
+    def _guard(self, post=False):
+        """Host 不是本機 → 403;POST 的 Origin 不是本機 → 403。回 False 表示已回應、呼叫端直接 return。"""
+        if not host_allowed(self.headers, BOUND_PORT):
+            self._send(403, json.dumps({"ok": False, "message": "forbidden host"})); return False
+        if post and not origin_allowed(self.headers, BOUND_PORT):
+            self._send(403, json.dumps({"ok": False, "message": "forbidden origin"})); return False
+        return True
+
     def do_GET(self):
+        if not self._guard(): return
         if self.path in ("/", "/index.html"):
-            html = INDEX.read_text()
+            html = INDEX.read_text(encoding="utf-8")
             inject = f'<script>window.__REPAIR__={{"token":"{TOKEN}","enabled":true}};</script>'
             html = html.replace("<!--REPAIR_HOOK-->", inject)
             return self._send(200, html, "text/html; charset=utf-8")
@@ -221,6 +276,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._send(404, "not found", "text/plain")
 
     def do_POST(self):
+        if not self._guard(post=True): return
         if self.path != "/api/fix":
             return self._send(404, json.dumps({"ok": False, "message": "unknown endpoint"}))
         try:
@@ -264,6 +320,7 @@ def _free_port(start, n=20):
     return None
 
 def main():
+    global BOUND_PORT
     if not INDEX.exists():
         print("找不到 report/index.html，請先執行 python3 generate_report.py")
         sys.exit(1)
@@ -277,6 +334,7 @@ def main():
     if port is None:
         print(f"連接埠 {PORT} 起算都被佔用,請關閉其他視窗後再試。")
         return
+    BOUND_PORT = port
     with ThreadingServer(("127.0.0.1", port), Handler) as httpd:
         url = f"http://127.0.0.1:{port}/"
         print("=" * 56)

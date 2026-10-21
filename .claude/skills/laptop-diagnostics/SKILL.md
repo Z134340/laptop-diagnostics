@@ -9,7 +9,7 @@ description: 對本機 macOS 執行多維度「唯讀」診斷(M1 重複檔 / M2
 在 macOS 上跑四維度唯讀診斷,輸出 `report/index.html`,再依使用者逐項確認做安全修復。
 
 ## 安全邊界(硬性)
-- 預設**唯讀**:收集階段只用 `find`(read-only)、`fdupes`、`brew`(read-only 子指令)、`md5`/`shasum`。
+- 預設**唯讀**:收集階段只用 `find`(read-only)、Python 唯讀 hash 比對(`m1_dupes.py`,不依賴 fdupes)、`brew`(read-only 子指令)、`md5`/`shasum`。
 - **絕不自動刪除/移動/修改任何使用者檔案**。任何寫入或刪除動作,**必須先逐項列出、取得使用者明確授權**(例:互動 console 按鈕或口頭同意)後才執行。
 - 遇到需要 `sudo` 的指令 → 記「權限不足,跳過」,繼續下一步。
 - 暫存資料只寫 `report/data/`。

@@ -4,18 +4,19 @@ generate_report.py
 讀取 report/data/*.json，輸出 report/index.html 互動式診斷報告
 (含「摘要」首頁、SVG icon、白話說明、檔案用途說明)
 """
-import json, os, sys, re
+import json, os, sys, re, html
 from pathlib import Path
 from datetime import datetime
 
 SCRIPT_DIR = Path(__file__).parent
-DATA_DIR   = SCRIPT_DIR / "report" / "data"
-OUT_HTML   = SCRIPT_DIR / "report" / "index.html"
+# 可用環境變數覆寫(測試用);預設維持 report/data 與 report/index.html
+DATA_DIR   = Path(os.environ.get("MACVITALS_DATA_DIR") or (SCRIPT_DIR / "report" / "data"))
+OUT_HTML   = Path(os.environ.get("MACVITALS_OUT_HTML") or (SCRIPT_DIR / "report" / "index.html"))
 
 def load(name):
     p = DATA_DIR / name
     if p.exists():
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             return json.load(f)
     return None
 
@@ -26,6 +27,11 @@ def fmt_bytes(b):
     if b >= 1024**2: return f"{b/1024**2:.1f} MB"
     if b >= 1024:    return f"{b/1024:.1f} KB"
     return f"{int(b)} B"
+
+def e(s):
+    """所有來自掃描資料的字串(檔名、指令輸出、程序名、登入項目…)進 HTML 前一律跳脫。
+    報告由本機伺服器提供且頁面內含修復 token,未跳脫的檔名可注入 <script> 直接呼叫 /api/fix。"""
+    return html.escape("" if s is None else str(s), quote=True)
 
 m1 = load("m1_dupes.json")
 m2 = load("m2_broken.json")
@@ -119,17 +125,18 @@ m3_gb     = m3.get("total_size_gb", 0) if m3 else 0
 m4_tools  = len([v for v in (m4 or {}).get("versions", {}).values() if "not found" not in v and "error" not in v.lower()]) if m4 else 0
 m5_total  = fmt_bytes(m5.get("total_reclaimable_bytes", 0)) if m5 else "—"
 m5_bytes  = m5.get("total_reclaimable_bytes", 0) if m5 else 0
-m6_cycle  = (m6 or {}).get("cycle_count", "—")
-m6_cap    = (m6 or {}).get("maximum_capacity", "—")
-m6_cond   = (m6 or {}).get("condition", "—")
-m6_chg    = (m6 or {}).get("charging", "—")
-m7_smart  = (m7 or {}).get("smart_status", "—")
-m7_free   = (m7 or {}).get("container_free", "—")
-m7_total_d= (m7 or {}).get("container_total", "—")
-m7_mem    = (m7 or {}).get("memory_free_pct", "—")
-m7_swap   = (m7 or {}).get("swap_usage", "—")
+# 以下純量直接以跳脫後的形式保存(後續只做數字 regex 擷取與關鍵字比對,不受跳脫影響)
+m6_cycle  = e((m6 or {}).get("cycle_count", "—"))
+m6_cap    = e((m6 or {}).get("maximum_capacity", "—"))
+m6_cond   = e((m6 or {}).get("condition", "—"))
+m6_chg    = e((m6 or {}).get("charging", "—"))
+m7_smart  = e((m7 or {}).get("smart_status", "—"))
+m7_free   = e((m7 or {}).get("container_free", "—"))
+m7_total_d= e((m7 or {}).get("container_total", "—"))
+m7_mem    = e((m7 or {}).get("memory_free_pct", "—"))
+m7_swap   = e((m7 or {}).get("swap_usage", "—"))
 m7_snaps  = (m7 or {}).get("local_snapshots_count", 0) if m7 else 0
-m7_uptime = (m7 or {}).get("uptime", "—")
+m7_uptime = e((m7 or {}).get("uptime", "—"))
 m8_login_n= (m8 or {}).get("counts", {}).get("login_items", 0) if m8 else 0
 m8_uagent_n=(m8 or {}).get("counts", {}).get("user_agents", 0) if m8 else 0
 m8_sagent_n=(m8 or {}).get("counts", {}).get("system_agents", 0) if m8 else 0
@@ -144,7 +151,7 @@ if m1:
     for i, g in enumerate(m1.get("groups", []), 1):
         first = g["files"][0]
         desc  = explain_file(first, os.path.splitext(first)[1])
-        files_html = "".join(f"<div class='dupe-path'>{f}</div>" for f in g["files"])
+        files_html = "".join(f"<div class='dupe-path'>{e(f)}</div>" for f in g["files"])
         m1_rows += (f"<tr data-wasted=\"{g['wasted_bytes']}\"><td>{i}</td>"
                     f"<td>{fmt_bytes(g['size_bytes'])}</td><td>{g['count']}</td>"
                     f"<td class='warn'>{fmt_bytes(g['wasted_bytes'])}</td>"
@@ -155,46 +162,46 @@ m3_rows = ""
 if m3:
     for i, f in enumerate(m3.get("files", []), 1):
         desc = explain_file(f['path'], f.get('ext',''))
-        m3_rows += (f"<tr><td>{i}</td><td class='file-path'>{f['path']}</td>"
-                    f"<td class='num'>{f['size_mb']} MB</td><td>{f.get('last_modified','—')}</td>"
-                    f"<td>{f.get('last_access','—')}</td><td>{f.get('ext','—')}</td>"
+        m3_rows += (f"<tr><td>{i}</td><td class='file-path'>{e(f['path'])}</td>"
+                    f"<td class='num'>{e(f['size_mb'])} MB</td><td>{e(f.get('last_modified','—'))}</td>"
+                    f"<td>{e(f.get('last_access','—'))}</td><td>{e(f.get('ext','—'))}</td>"
                     f"<td class='muted'>{desc}</td></tr>")
 
 # ── M2 列 ─────────────────────────────────────────────────────
 m2_stale_rows = ""
 if m2:
     for item in m2.get("stale_symlinks", []):
-        m2_stale_rows += f"<tr><td class='warn'>{item['path']}</td><td class='file-path'>{item.get('target','')}</td></tr>"
+        m2_stale_rows += f"<tr><td class='warn'>{e(item['path'])}</td><td class='file-path'>{e(item.get('target',''))}</td></tr>"
 m2_brew_rows = ""
 if m2:
     for issue in m2.get("brew_issues", []):
         cls = "error" if "Error" in issue else "warn"
-        m2_brew_rows += f"<tr><td><pre class='{cls}'>{issue}</pre></td></tr>"
+        m2_brew_rows += f"<tr><td><pre class='{cls}'>{e(issue)}</pre></td></tr>"
 
 # ── M4 列 ─────────────────────────────────────────────────────
 def ver_row(name, val):
     bad = ("not found" in val or "error" in val.lower())
     icon = ic("x", "ic-err") if bad else ic("check", "ic-ok")
-    return f"<tr><td>{name}</td><td class='muted'>{TOOL_DESC.get(name,'')}</td><td>{icon}</td><td><code>{val[:80]}</code></td></tr>"
+    return f"<tr><td>{name}</td><td class='muted'>{TOOL_DESC.get(name,'')}</td><td>{icon}</td><td><code>{e(val[:80])}</code></td></tr>"
 m4_ver_rows = "".join(ver_row(k, v) for k, v in (m4 or {}).get("versions", {}).items())
-m4_npm_doc  = (m4 or {}).get("npm_doctor", "—")
-m4_brew_pkg = (m4 or {}).get("brew_installed_packages", "—")
-m4_pip_out  = (m4 or {}).get("pip_outdated", "—")
-m4_nvm      = (m4 or {}).get("nvm_versions", "—")
-m4_pyenv    = (m4 or {}).get("pyenv_versions", "—")
+m4_npm_doc  = e((m4 or {}).get("npm_doctor", "—"))
+m4_brew_pkg = e((m4 or {}).get("brew_installed_packages", "—"))
+m4_pip_out  = e((m4 or {}).get("pip_outdated", "—"))
+m4_nvm      = e((m4 or {}).get("nvm_versions", "—"))
+m4_pyenv    = e((m4 or {}).get("pyenv_versions", "—"))
 
 # ── M5 列 ─────────────────────────────────────────────────────
 m5_rows = ""
 if m5:
     for it in m5.get("items", []):
-        m5_rows += (f"<tr><td>{it['label']}</td><td class='file-path'>{it['path']}</td>"
-                    f"<td class='num'>{fmt_bytes(it['size_bytes'])}</td><td class='muted'>{it.get('note','')}</td></tr>")
+        m5_rows += (f"<tr><td>{e(it['label'])}</td><td class='file-path'>{e(it['path'])}</td>"
+                    f"<td class='num'>{fmt_bytes(it['size_bytes'])}</td><td class='muted'>{e(it.get('note',''))}</td></tr>")
 
 # ── M8 列 ─────────────────────────────────────────────────────
 def li_rows(items, highlight=False):
     if not items: return "<tr><td class='muted'>（無）</td></tr>"
     cls = "warn" if highlight else ""
-    return "".join(f"<tr><td class='{cls}'>{x}</td></tr>" for x in items)
+    return "".join(f"<tr><td class='{cls}'>{e(x)}</td></tr>" for x in items)
 m8_login   = li_rows((m8 or {}).get("login_items", []))
 m8_tp_user = li_rows((m8 or {}).get("third_party_user_agents", []), highlight=True)
 m8_tp_sys  = li_rows((m8 or {}).get("third_party_system_agents", []), highlight=True)
@@ -215,7 +222,7 @@ if m9:
     m9_cards += sec_card("Gatekeeper",         m9.get("gatekeeper", {}).get("state","unknown"), "阻擋未簽章程式")
     m9_cards += sec_card("防火牆",              m9.get("firewall", {}).get("state","unknown"), "阻擋未授權連線")
 m9_updates = (m9 or {}).get("pending_updates", [])
-m9_upd_rows = "".join(f"<tr><td class='warn'>{u.replace('* Label: ','')}</td></tr>" for u in m9_updates) or "<tr><td class='ok'>系統已是最新</td></tr>"
+m9_upd_rows = "".join(f"<tr><td class='warn'>{e(u.replace('* Label: ',''))}</td></tr>" for u in m9_updates) or "<tr><td class='ok'>系統已是最新</td></tr>"
 
 # ── M7 即時資源占用 Top ───────────────────────────────────────
 def proc_rows(rows):
@@ -223,19 +230,19 @@ def proc_rows(rows):
     for p in rows or []:
         try: hot = float(p.get("cpu","0")) >= 70
         except Exception: hot = False
-        out += (f"<tr><td class=\"{'warn' if hot else ''}\">{p.get('name','')}</td>"
-                f"<td class='num'>{p.get('cpu','—')}%</td><td class='num'>{p.get('mem','—')}%</td>"
-                f"<td class='muted'>{p.get('pid','')}</td></tr>")
+        out += (f"<tr><td class=\"{'warn' if hot else ''}\">{e(p.get('name',''))}</td>"
+                f"<td class='num'>{e(p.get('cpu','—'))}%</td><td class='num'>{e(p.get('mem','—'))}%</td>"
+                f"<td class='muted'>{e(p.get('pid',''))}</td></tr>")
     return out or "<tr><td colspan='4' class='empty'>無資料</td></tr>"
 m7_cpu_rows = proc_rows((m7 or {}).get("top_cpu", []))
 m7_mem_rows = proc_rows((m7 or {}).get("top_mem", []))
 m7_top_cpu_max = (m7 or {}).get("top_cpu_max", 0) or 0
-m7_busiest = ((m7 or {}).get("top_cpu") or [{}])[0].get("name", "—")
+m7_busiest = e(((m7 or {}).get("top_cpu") or [{}])[0].get("name", "—"))
 
 # ── M9 System Extensions ─────────────────────────────────────
 m9_sysext = (m9 or {}).get("system_extensions", {}) or {}
 m9_sysext_n = m9_sysext.get("active_count", 0)
-m9_sysext_rows = "".join(f"<tr><td class='file-path'>{x}</td></tr>" for x in m9_sysext.get("active", [])) \
+m9_sysext_rows = "".join(f"<tr><td class='file-path'>{e(x)}</td></tr>" for x in m9_sysext.get("active", [])) \
                  or "<tr><td class='ok'>無第三方 system extension(乾淨)</td></tr>"
 
 # ── M10 近期當機 ──────────────────────────────────────────────
@@ -244,17 +251,18 @@ m10_panic= (m10 or {}).get("panic_count_30d", 0)
 m10_apps = (m10 or {}).get("apps", [])
 m10_worst = m10_apps[0] if m10_apps else None
 m10_worst_30d = (m10_worst or {}).get("count", 0)
+m10_worst_app = e((m10_worst or {}).get("app", "—"))
 m10_app_rows = ""
 for a in m10_apps:
     hot = a.get("count", 0) >= 5 or a.get("panic")
     badge = " <span class='hl-badge danger'>核心崩潰</span>" if a.get("panic") else ""
-    m10_app_rows += (f"<tr><td class=\"{'warn' if hot else ''}\">{a.get('app','')}{badge}</td>"
+    m10_app_rows += (f"<tr><td class=\"{'warn' if hot else ''}\">{e(a.get('app',''))}{badge}</td>"
                      f"<td class='num'>{a.get('count',0)}</td>"
-                     f"<td class='muted'>{a.get('kinds','')}</td><td class='muted'>{a.get('last','')}</td></tr>")
+                     f"<td class='muted'>{e(a.get('kinds',''))}</td><td class='muted'>{e(a.get('last',''))}</td></tr>")
 m10_app_rows = m10_app_rows or "<tr><td colspan='4' class='empty'>近 30 天無當機紀錄</td></tr>"
 m10_recent_rows = "".join(
-    f"<tr><td>{r.get('app','')}</td><td>{r.get('kind','')}</td><td class='muted'>{r.get('date','')}</td>"
-    f"<td class='muted'>{r.get('scope','')}</td></tr>" for r in (m10 or {}).get("recent", [])
+    f"<tr><td>{e(r.get('app',''))}</td><td>{e(r.get('kind',''))}</td><td class='muted'>{e(r.get('date',''))}</td>"
+    f"<td class='muted'>{e(r.get('scope',''))}</td></tr>" for r in (m10 or {}).get("recent", [])
 ) or "<tr><td colspan='4' class='empty'>無</td></tr>"
 
 # ── M11 分享 / 遠端存取 ───────────────────────────────────────
@@ -264,14 +272,14 @@ m11_autologin= (m11 or {}).get("auto_login", False)
 m11_open_services = [s for s in m11_services if s.get("state") == "on"]
 m11_state = {s.get("key"): s.get("state") for s in m11_services}
 # 已開放、但無一鍵修復(僅導引到系統設定)的服務名稱
-m11_other_open = [s["name"] for s in m11_open_services if not s.get("action")]
+m11_other_open = [e(s["name"]) for s in m11_open_services if not s.get("action")]
 def _m11_badge(state):
     return (f"<span class='hl-badge warn'>開啟</span>" if state == "on"
             else "<span class='cov-off'>關閉</span>")
 m11_rows = "".join(
-    f"<tr><td class=\"{'warn' if s.get('state')=='on' else ''}\">{s.get('name','')}</td>"
-    f"<td class='num'>{s.get('port','')}</td><td>{_m11_badge(s.get('state'))}</td>"
-    f"<td class='muted'>{s.get('risk','')}</td></tr>" for s in m11_services
+    f"<tr><td class=\"{'warn' if s.get('state')=='on' else ''}\">{e(s.get('name',''))}</td>"
+    f"<td class='num'>{e(s.get('port',''))}</td><td>{_m11_badge(s.get('state'))}</td>"
+    f"<td class='muted'>{e(s.get('risk',''))}</td></tr>" for s in m11_services
 ) or "<tr><td colspan='4' class='empty'>無資料</td></tr>"
 
 # Tailscale 與「非 loopback 監聽埠」(真實對外存取面,超出那 5 個 Apple 服務)
@@ -282,8 +290,8 @@ m11_ts_funnel  = m11_ts.get("funnel_active", False)
 m11_ext = (m11 or {}).get("external_listeners", [])
 m11_ext_n = (m11 or {}).get("external_count", 0)
 m11_ext_rows = "".join(
-    f"<tr><td>{e.get('proc','')}</td><td class='file-path'>{e.get('addr','')}</td><td class='num'>{e.get('port','')}</td></tr>"
-    for e in m11_ext
+    f"<tr><td>{e(x.get('proc',''))}</td><td class='file-path'>{e(x.get('addr',''))}</td><td class='num'>{e(x.get('port',''))}</td></tr>"
+    for x in m11_ext
 ) or "<tr><td colspan='3' class='empty'>無服務綁在非 loopback(外部裝置碰不到)✓</td></tr>"
 if not m11_ts_running:
     m11_ts_summary, m11_ts_cls = "未執行", "ok"
@@ -300,6 +308,8 @@ else:
 m4_brew_outdated_n = (m4 or {}).get("brew_outdated_count", 0)
 m4_pip_outdated_n  = (m4 or {}).get("pip_outdated_count", 0)
 m4_npm_g_outdated_n= (m4 or {}).get("npm_global_outdated_count", 0)
+m4_pip_self_old    = bool((m4 or {}).get("pip_self_outdated", False))
+m4_pip_pkgs_n      = max(0, m4_pip_outdated_n - (1 if m4_pip_self_old else 0))   # 扣掉 pip 本身
 
 # M7 磁碟 / M6 電池 / M9 安全 的結構化判讀(供規則表)
 def _bytes(s):
@@ -332,10 +342,15 @@ RULES = [
    "desc":"已安裝的 Homebrew 套件有新版。點「一鍵升級」會執行 brew upgrade 全部升級(含相依)。",
    "action":{"id":"brew_upgrade","label":"一鍵升級 Homebrew","confirm":"將執行 brew upgrade 升級所有可更新的 Homebrew 套件,可能需要幾分鐘。確定?"}},
 
-  {"id":"pip_outdated", "applies": lambda: m4_pip_outdated_n > 0, "sev":"info", "icon":"terminal", "tab":4,
-   "title": lambda: f"pip 與 {m4_pip_outdated_n} 個套件版本過舊",
-   "desc":"pip 工具本身版本偏舊。點「更新 pip」會安全地把 pip 升級到最新(安裝到使用者目錄,不動系統 Python)。各套件升級涉及相依風險,建議到 M4 檢視後於虛擬環境處理。",
+  {"id":"pip_outdated", "applies": lambda: m4_pip_self_old, "sev":"info", "icon":"terminal", "tab":4,
+   "title": lambda: "pip 工具本身版本過舊",
+   "desc":"pip 工具本身有新版。點「更新 pip」會安全地把 pip 升級到最新(安裝到使用者目錄,不動系統 Python);更新後此項就會消失。",
    "action":{"id":"update_pip","label":"更新 pip","confirm":"將把 pip 工具升級到最新版(--user,不影響系統 Python)。確定?"}},
+
+  {"id":"pip_packages_outdated", "applies": lambda: m4_pip_pkgs_n > 0, "sev":"info", "icon":"terminal", "tab":4,
+   "title": lambda: f"{m4_pip_pkgs_n} 個 pip 套件有新版",
+   "desc":"已安裝的 Python 套件有新版。套件升級涉及相依風險,不提供一鍵;請到 M4 檢視清單後,在虛擬環境中自行升級。",
+   "action": None},
 
   {"id":"npm_global_outdated", "applies": lambda: m4_npm_g_outdated_n > 0, "sev":"info", "icon":"terminal", "tab":4,
    "title": lambda: f"npm 有 {m4_npm_g_outdated_n} 個全域套件可更新",
@@ -412,7 +427,7 @@ RULES = [
    "desc":"Kernel panic 代表系統層級崩潰、整台重新開機,常見原因是老舊驅動/核心擴充或硬體。請查 M10 崩潰來源,並更新或移除相關第三方擴充(見 M9 System Extensions)。",
    "action": None},
   {"id":"frequent_crashes", "applies": lambda: m10_worst_30d >= 5, "sev":"warn", "icon":"pulse", "tab":10,
-   "title": lambda: f"{(m10_worst or {}).get('app','某 App')} 近 30 天當機 {m10_worst_30d} 次",
+   "title": lambda: f"{m10_worst_app} 近 30 天當機 {m10_worst_30d} 次",
    "desc":"同一支程式反覆當機通常是它本身的問題(版本過舊/設定損壞),也會持續吃資源。建議更新或重裝該 App;若是你已不用的軟體,可考慮移除。不提供一鍵動作以免誤刪。",
    "action": None},
 
@@ -461,7 +476,7 @@ highlights.sort(key=lambda h: SEV_RANK.get(h[0], 9))
 
 # 正向(良好)項目
 positives = []
-if m6_cond and m6_cond != "—":
+if m6 and not m6_degraded and m6_cond not in ("—", ""):
     positives.append(f"電池健康(循環 {m6_cycle} 次、容量 {m6_cap}、{m6_cond})")
 if m7_smart and "verif" in str(m7_smart).lower():
     positives.append(f"硬碟 SMART 正常、可用空間 {m7_free}")
@@ -543,7 +558,7 @@ TAB_NAMES = {1:"M1 重複檔",2:"M2 損壞項目",3:"M3 大型檔",4:"M4 開發�
              10:"M10 近期當機",11:"M11 分享存取"}
 FINDING = {
   "firewall_off":"防火牆關閉", "os_updates":"系統更新待安裝", "brew_outdated":"Homebrew 套件過舊",
-  "pip_outdated":"pip 版本過舊", "npm_global_outdated":"npm 全域套件過舊", "third_party_agents":"第三方開機自啟",
+  "pip_outdated":"pip 工具本身過舊", "pip_packages_outdated":"pip 套件有新版", "npm_global_outdated":"npm 全域套件過舊", "third_party_agents":"第三方開機自啟",
   "reclaimable":"快取可回收", "m2_issues":"殘留 symlink / brew PATH", "dupes":"重複檔案",
   "smart_fail":"硬碟 SMART 異常", "low_disk":"磁碟空間不足", "apfs_snapshots":"APFS 快照偏多",
   "battery_health":"電池老化", "filevault_off":"FileVault 未開啟", "sip_off":"SIP 已關閉",
@@ -556,7 +571,7 @@ FINDING = {
 MANUAL = {"smart_fail":"硬體 · 僅警示", "battery_health":"硬體 · 僅警示", "sip_off":"需 Recovery 模式",
           "dupes":"刪檔需取捨", "large_files":"需自行判斷", "third_party_agents":"需逐一判斷",
           "kernel_panic":"硬體/驅動 · 僅警示", "frequent_crashes":"更新/移除該 App", "high_cpu":"快照 · 僅警示",
-          "other_sharing_on":"到系統設定關閉", "auto_login_on":"到系統設定關閉",
+          "other_sharing_on":"到系統設定關閉", "auto_login_on":"到系統設定關閉", "pip_packages_outdated":"於虛擬環境自行升級",
           "tailscale_funnel":"tailscale funnel off", "external_listeners":"需逐一確認"}
 cov_active = 0
 cov_rows = ""
@@ -788,7 +803,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M1 Panel -->
 <div class="panel" id="p1">
   <div class="panel-head">{ic('copy')}M1 重複檔案</div>
-  {note("「重複檔案」指內容一模一樣的檔案(以大小＋逐位元組比對,連檔名不同也算)。保留一份、刪掉其餘副本即可省空間,不影響使用。掃描範圍是你的家目錄,已排除 .Trash／node_modules／.git。點路徑欄可展開看所有副本。")}
+  {note("「重複檔案」指內容一模一樣的檔案(以大小＋逐位元組比對,連檔名不同也算)。保留一份、刪掉其餘副本即可省空間,不影響使用。掃描範圍是你的家目錄,已排除 .Trash／node_modules／.git 與各類快取／容器目錄。點路徑欄可展開看所有副本。")}
   <div class="filter-bar">
     <input type="text" id="m1-filter" placeholder="篩選路徑..." oninput="filterTable('m1-table', this.value, 4)">
     <select onchange="filterM1Size(this.value)">
@@ -953,7 +968,7 @@ HTML = f"""<!DOCTYPE html>
   <div class="cards" style="padding:0 0 8px;">
     <div class="card {'info' if m10_30d else 'ok'}"><div class="label">近 30 天當機報告</div><div class="value">{m10_30d}</div><div class="sub">所有 App 合計</div></div>
     <div class="card {'danger' if m10_panic else 'ok'}"><div class="label">核心崩潰 (panic)</div><div class="value">{m10_panic}</div><div class="sub">整機重開 · 近 30 天</div></div>
-    <div class="card info"><div class="label">最頻繁來源</div><div class="value" style="font-size:16px">{(m10_worst or {}).get('app','—')}</div><div class="sub">近 30 天 {(m10_worst or {}).get('count',0)} 次</div></div>
+    <div class="card info"><div class="label">最頻繁來源</div><div class="value" style="font-size:16px">{m10_worst_app}</div><div class="sub">近 30 天 {(m10_worst or {}).get('count',0)} 次</div></div>
   </div>
   <div class="section-title">依 App 統計(近 30 天)</div>
   <div class="tbl-wrap"><table>
@@ -1060,7 +1075,7 @@ function filterM3Ext(ext) {{
 """
 
 OUT_HTML.parent.mkdir(parents=True, exist_ok=True)
-with open(OUT_HTML, "w") as f:
+with open(OUT_HTML, "w", encoding="utf-8") as f:
     f.write(HTML)
 
 print(f"\n✅ 報告已生成：{OUT_HTML}")
