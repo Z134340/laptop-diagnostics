@@ -16,9 +16,23 @@ OUT_HTML   = Path(os.environ.get("MACVITALS_OUT_HTML") or (SCRIPT_DIR / "report"
 def load(name):
     p = DATA_DIR / name
     if p.exists():
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as exc:
+            return {"error": f"讀取 {name} 失敗:{exc}"}
     return None
+
+# 模組 JSON 含 "error" 欄位 = 收集程式(macvitals.collect)在該模組拋了例外。
+# 這類模組:資料視為缺席(None)、分頁與摘要卡顯示失敗訊息、規則表一律視為未命中。
+MODULE_ERRORS = {}   # {模組編號(int): 錯誤訊息}
+
+def load_module(n, name):
+    d = load(name)
+    if isinstance(d, dict) and d.get("error"):
+        MODULE_ERRORS[n] = str(d["error"])
+        return None
+    return d
 
 def fmt_bytes(b):
     try: b = float(b)
@@ -33,17 +47,17 @@ def e(s):
     報告由本機伺服器提供且頁面內含修復 token,未跳脫的檔名可注入 <script> 直接呼叫 /api/fix。"""
     return html.escape("" if s is None else str(s), quote=True)
 
-m1 = load("m1_dupes.json")
-m2 = load("m2_broken.json")
-m3 = load("m3_large.json")
-m4 = load("m4_env.json")
-m5 = load("m5_reclaimable.json")
-m6 = load("m6_battery.json")
-m7 = load("m7_system.json")
-m8 = load("m8_startup.json")
-m9 = load("m9_security.json")
-m10 = load("m10_crashes.json")
-m11 = load("m11_sharing.json")
+m1 = load_module(1, "m1_dupes.json")
+m2 = load_module(2, "m2_broken.json")
+m3 = load_module(3, "m3_large.json")
+m4 = load_module(4, "m4_env.json")
+m5 = load_module(5, "m5_reclaimable.json")
+m6 = load_module(6, "m6_battery.json")
+m7 = load_module(7, "m7_system.json")
+m8 = load_module(8, "m8_startup.json")
+m9 = load_module(9, "m9_security.json")
+m10 = load_module(10, "m10_crashes.json")
+m11 = load_module(11, "m11_sharing.json")
 
 scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -53,6 +67,15 @@ def ic(name, cls=""):
 
 def note(text):
     return f"<div class='note-box'>{ic('info')}<span>{text}</span></div>"
+
+def fail_note(n):
+    """模組 n 收集失敗時,放在該分頁最上方的紅色提示;正常時回空字串。"""
+    msg = MODULE_ERRORS.get(n)
+    if not msg:
+        return ""
+    return (f"<div class='note-box fail'>{ic('alert')}<span><b>此模組收集失敗:</b>{e(msg)}<br>"
+            f"下方資料為空是因為收集失敗,不代表這台機器沒有問題。可單獨重跑這個模組:"
+            f"<code>python3 -m macvitals.collect --only m{n}</code>,再執行 <code>python3 generate_report.py</code>。</span></div>")
 
 # ── 檔案用途白話說明 ──────────────────────────────────────────
 EXT_DESC = {
@@ -467,6 +490,8 @@ RULES = [
 SEV_RANK = {"danger":0, "warn":1, "info":2}
 highlights = []
 for r in RULES:
+    if r["tab"] in MODULE_ERRORS:   # 模組收集失敗 → 該模組的規則一律視為未命中
+        continue
     try:
         if r["applies"]():
             highlights.append((r["sev"], r["icon"], r["title"](), r["desc"], r["tab"], r.get("action")))
@@ -499,6 +524,9 @@ elif n_warn:
 else:
     vcls, vicon, vtitle = "ok","check","整體狀態良好"
     vsub = "未發現需要處理的重要項目。"
+if MODULE_ERRORS:
+    vsub += (f" 另有 {len(MODULE_ERRORS)} 個模組收集失敗("
+             + "、".join(f"M{n}" for n in sorted(MODULE_ERRORS)) + "),其結果未納入判讀,詳見各分頁。")
 
 SEV_BADGE = {"danger":"高風險 · 建議立即處理", "warn":"中等 · 建議處理", "info":"參考 · 可選優化"}
 def jsstr(s):  # 安全嵌入單引號 JS 字串(用於 double-quoted onclick 屬性內)
@@ -547,6 +575,8 @@ overview = [
 ]
 ov_html = ""
 for num, icon, label, val, desc, status in overview:
+    if num in MODULE_ERRORS:
+        val, desc, status = "收集失敗", "此模組收集失敗:" + e(MODULE_ERRORS[num][:120]), "fail"
     ov_html += (f"<div class='mod-card {status}' onclick='switchTab({num})'>"
                 f"<div class='mod-top'><span class='mod-ic'>{ic(icon)}</span>"
                 f"<span class='mod-label'>{label}</span><span class='mod-arrow'>{ic('chevron')}</span></div>"
@@ -577,13 +607,15 @@ cov_active = 0
 cov_rows = ""
 for r in RULES:
     rid = r["id"]
-    try: active = bool(r["applies"]())
+    failed = r["tab"] in MODULE_ERRORS
+    try: active = (not failed) and bool(r["applies"]())
     except Exception: active = False
     if active: cov_active += 1
     act = r.get("action")
     handling = (f"<span class='cov-fix'>{ic('check')}一鍵 · {act['label']}</span>" if act
                 else f"<span class='cov-man'>{MANUAL.get(rid,'需人工判斷')}</span>")
-    status = ("<span class='cov-on'>● 本次命中</span>" if active else "<span class='cov-off'>○ 未命中</span>")
+    status = ("<span class='cov-on'>● 本次命中</span>" if active else
+              ("<span class='cov-off'>○ 未命中(模組收集失敗)</span>" if failed else "<span class='cov-off'>○ 未命中</span>"))
     cov_rows += (f"<tr class=\"{'cov-active' if active else ''}\"><td>{TAB_NAMES.get(r['tab'],'')}</td>"
                  f"<td>{FINDING.get(rid, rid)}</td><td>{handling}</td><td>{status}</td></tr>")
 cov_total = len(RULES)
@@ -636,6 +668,9 @@ HTML = f"""<!DOCTYPE html>
   /* note box (白話說明) */
   .note-box {{ display:flex; gap:10px; align-items:flex-start; background:var(--surface); border-left:3px solid var(--cyan); border-radius:6px; padding:12px 14px; margin:0 0 20px; font-size:13px; color:#b6c0d4; }}
   .note-box .ic {{ color:var(--cyan); width:17px; height:17px; margin-top:1px; }}
+  .note-box.fail {{ border-left-color:var(--red); color:#f3c6c6; }}
+  .note-box.fail .ic {{ color:var(--red); }}
+  .note-box.fail code {{ font-family:'SF Mono',ui-monospace,monospace; font-size:12px; background:var(--surface2); padding:1px 5px; border-radius:4px; }}
   /* table */
   .tbl-wrap {{ overflow-x:auto; border:1px solid var(--border); border-radius:8px; }}
   table {{ width:100%; border-collapse:collapse; }}
@@ -708,6 +743,7 @@ HTML = f"""<!DOCTYPE html>
   .mod-card:hover {{ border-color:var(--cyan); transform:translateY(-1px); }}
   .mod-card.danger {{ border-top:3px solid var(--red); }} .mod-card.warn {{ border-top:3px solid var(--yellow); }}
   .mod-card.ok {{ border-top:3px solid var(--green); }} .mod-card.info {{ border-top:3px solid var(--cyan); }}
+  .mod-card.fail {{ border-top:3px dashed var(--red); }} .mod-card.fail .mod-val {{ color:var(--red); }}
   .mod-top {{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }}
   .mod-ic {{ color:var(--cyan); display:flex; }} .mod-label {{ font-weight:600; font-size:13px; flex:1; }} .mod-arrow {{ color:var(--muted); display:flex; }} .mod-arrow .ic {{ width:15px; height:15px; }}
   .mod-val {{ font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; }} .mod-desc {{ color:var(--muted); font-size:12px; margin-top:4px; }}
@@ -803,6 +839,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M1 Panel -->
 <div class="panel" id="p1">
   <div class="panel-head">{ic('copy')}M1 重複檔案</div>
+  {fail_note(1)}
   {note("「重複檔案」指內容一模一樣的檔案(以大小＋逐位元組比對,連檔名不同也算)。保留一份、刪掉其餘副本即可省空間,不影響使用。掃描範圍是你的家目錄,已排除 .Trash／node_modules／.git 與各類快取／容器目錄。點路徑欄可展開看所有副本。")}
   <div class="filter-bar">
     <input type="text" id="m1-filter" placeholder="篩選路徑..." oninput="filterTable('m1-table', this.value, 4)">
@@ -820,6 +857,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M2 Panel -->
 <div class="panel" id="p2">
   <div class="panel-head">{ic('unlink')}M2 損壞項目</div>
+  {fail_note(2)}
   {note("「斷裂 symlink」是指向已不存在目標的捷徑。數字看起來嚇人,但約 99.7% 是 macOS 與 App 的正常設計——沙盒範本與執行鎖檔都不該動。只有「真殘留」(指向已刪目標)才值得清理。brew doctor 的警告多半是 PATH 設定,不是壞檔。")}
   <div class="cards" style="padding:0 0 8px;">
     <div class="card ok"><div class="label">沙盒範本捷徑</div><div class="value">{m2_sandbox}</div><div class="sub">macOS 自動維護 · 正常</div></div>
@@ -842,6 +880,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M3 Panel -->
 <div class="panel" id="p3">
   <div class="panel-head">{ic('files')}M3 大型檔案</div>
+  {fail_note(3)}
   {note("列出所有超過 100MB 的檔案(已排除 /System、/private/var)。「大」不等於「該刪」——請看最右「這是什麼」欄判斷用途:例如 .dmg/.pkg 安裝檔裝完可刪,但 Docker 虛擬磁碟、照片圖庫請勿手動刪。")}
   <div class="filter-bar">
     <input type="text" id="m3-filter" placeholder="篩選路徑或副檔名..." oninput="filterTable('m3-table', this.value, 1)">
@@ -860,6 +899,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M4 Panel -->
 <div class="panel" id="p4">
   <div class="panel-head">{ic('terminal')}M4 開發環境</div>
+  {fail_note(4)}
   {note("檢查常用開發工具是否安裝就緒、版本是否過時。✓ 代表已就緒,✗ 代表未安裝(若你用不到可忽略)。系統內建的 python3/ruby/git 由 macOS 控管,開發建議改用 Homebrew 版本。")}
   <div class="section-title">工具版本矩陣</div>
   <div class="tbl-wrap"><table>
@@ -876,6 +916,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M5 Panel -->
 <div class="panel" id="p5">
   <div class="panel-head">{ic('recycle')}M5 可回收空間</div>
+  {fail_note(5)}
   {note("估算可以安全清理回收的空間,主要是各種 App 與工具的「快取」(暫存資料)。清掉後 App 下次使用會自動重建,不會遺失你的文件或設定。下表依大小排序,並附建議的清理方式。")}
   <div class="cards" style="padding:0 0 8px;">
     <div class="card info"><div class="label">可回收空間合計</div><div class="value">{m5_total}</div><div class="sub">下列項目加總</div></div>
@@ -890,6 +931,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M6 Panel -->
 <div class="panel" id="p6">
   <div class="panel-head">{ic('battery')}M6 電池</div>
+  {fail_note(6)}
   {note("電池會隨充放電老化。判讀重點:循環次數(Apple 筆電設計壽命約 1000 次)、最大容量(低於 80% 才算明顯老化)、狀態(Normal 即正常)。三者良好就無須換電池。")}
   <div class="cards" style="padding:0 0 8px;">
     <div class="card info"><div class="label">循環次數</div><div class="value">{m6_cycle}</div><div class="sub">Cycle Count(壽命 ~1000)</div></div>
@@ -902,6 +944,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M7 Panel -->
 <div class="panel" id="p7">
   <div class="panel-head">{ic('activity')}M7 系統健康</div>
+  {fail_note(7)}
   {note("反映整體系統壓力。SMART=Verified 表示硬碟自我檢測正常;記憶體空閒過低或 swap 用量大代表記憶體吃緊;APFS 本機快照會暫時佔用空間(Time Machine 自動產生,系統會自行回收)。")}
   <div class="cards" style="padding:0 0 8px;">
     <div class="card ok"><div class="label">磁碟 SMART</div><div class="value" style="font-size:20px">{m7_smart}</div><div class="sub">硬碟自我檢測</div></div>
@@ -934,6 +977,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M8 Panel -->
 <div class="panel" id="p8">
   <div class="panel-head">{ic('power')}M8 登入背景</div>
+  {fail_note(8)}
   {note("列出開機/登入時自動啟動、並常駐背景的程式。太多會拖慢開機、長期佔用資源。「第三方項目」(非 com.apple 開頭)特別標黃——那是你裝的軟體放的;不認得的可到「系統設定 → 一般 → 登入項目與擴充功能」停用。")}
   <div class="cards" style="padding:0 0 8px;">
     <div class="card info"><div class="label">登入項目</div><div class="value">{m8_login_n}</div><div class="sub">Login Items</div></div>
@@ -952,6 +996,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M9 Panel -->
 <div class="panel" id="p9">
   <div class="panel-head">{ic('shield')}M9 安全更新</div>
+  {fail_note(9)}
   {note("四道安全防線:FileVault(整碟加密,筆電遺失時保護資料)、SIP(防止系統被竄改)、Gatekeeper(阻擋未簽章 App)、防火牆(阻擋未授權的網路連入)。綠色=開啟為佳。下方列出待安裝的系統更新。")}
   <div class="cards" style="padding:0 0 8px;">{m9_cards}</div>
   <div class="section-title">待安裝更新（{m9_upd_n} 項）</div>
@@ -964,6 +1009,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M10 Panel -->
 <div class="panel" id="p10">
   <div class="panel-head">{ic('pulse')}M10 近期當機</div>
+  {fail_note(10)}
   {note("彙整 macOS 自動保存的崩潰／診斷報告(~/Library/Logs/DiagnosticReports 與系統目錄),依 App 統計近 30 天的當機次數。同一支程式反覆當機通常是它本身的問題;『核心崩潰(panic)』則是系統層級、會整台重開,多與老舊驅動或 System Extension 有關。這頁只判讀、不自動刪除任何東西。")}
   <div class="cards" style="padding:0 0 8px;">
     <div class="card {'info' if m10_30d else 'ok'}"><div class="label">近 30 天當機報告</div><div class="value">{m10_30d}</div><div class="sub">所有 App 合計</div></div>
@@ -985,6 +1031,7 @@ HTML = f"""<!DOCTYPE html>
 <!-- M11 Panel -->
 <div class="panel" id="p11">
   <div class="panel-head">{ic('share')}M11 分享存取</div>
+  {fail_note(11)}
   {note("檢查這台 Mac 對外開放了哪些遠端存取／分享服務——這些是別人能從網路接觸到你電腦的『門』。做法是對本機通訊埠探聽(唯讀),反映服務是否真的在聽。非刻意開啟的建議關閉以縮小攻擊面。螢幕共享與遠端登入可一鍵關閉(會跳原生授權視窗);其餘請到「系統設定 → 一般 → 共享」處理。")}
   <div class="cards" style="padding:0 0 8px;">
     <div class="card {'warn' if m11_open_n else 'ok'}"><div class="label">對外服務開啟</div><div class="value">{m11_open_n}<span style="font-size:15px;color:var(--muted)"> / 5</span></div><div class="sub">越少越安全</div></div>

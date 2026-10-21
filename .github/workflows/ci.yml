@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    # 收集模組只在 macOS 上有意義(diskutil / system_profiler / socketfilterfw …)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # 鎖 3.9:Apple 內建 python3 就是 3.9,套件必須在這個版本跑得動(不用 match、不用 X | Y)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Unit tests(純標準函式庫)
+        run: python3 -m unittest discover -s tests -v
+
+      - name: diagnose.sh 語法
+        run: bash -n diagnose.sh
+
+      # Smoke:只跑不需要掃整顆硬碟的模組,然後真的產一份報告。
+      # 每個模組的 JSON 都不能帶 error(collect 對模組例外會寫 error 欄位而不是非 0 退出)。
+      - name: Smoke(收集 M6/M7/M8/M9/M11 + 產報告)
+        run: |
+          python3 -m macvitals.collect --only m6 m7 m8 m9 m11
+          python3 generate_report.py
+          python3 - <<'EOF'
+          import json, pathlib, sys
+          names = ["m6_battery.json", "m7_system.json", "m8_startup.json", "m9_security.json", "m11_sharing.json"]
+          bad = []
+          for n in names:
+              p = pathlib.Path("report/data") / n
+              if not p.exists():
+                  bad.append(n + " missing"); continue
+              d = json.loads(p.read_text(encoding="utf-8"))
+              if d.get("error"):
+                  bad.append(n + " error: " + str(d["error"]))
+          prog = json.loads(pathlib.Path("report/data/progress.json").read_text(encoding="utf-8"))
+          if not prog.get("finished") or prog.get("failed"):
+              bad.append("progress.json: " + json.dumps(prog, ensure_ascii=False))
+          html = pathlib.Path("report/index.html").read_text(encoding="utf-8")
+          if "MacVitals" not in html or "此模組收集失敗" in html:
+              bad.append("report missing or shows a failed module")
+          print("\n".join(bad) if bad else "smoke OK: 5 modules + report")
+          sys.exit(1 if bad else 0)
+          EOF
+
+      - name: Python 3.9 語法檢查(整個套件 + 根目錄腳本)
+        run: python3 -m compileall -q macvitals generate_report.py app_server.py repair_server.py m1_dupes.py tests
