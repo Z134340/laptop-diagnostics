@@ -8,6 +8,7 @@ report/index.html
 .DS_Store
 
 # ── 建置與測試暫存 ────────────────────────────────
+node_modules/
 .playwright-mcp/
 __pycache__/
 *.pyc
