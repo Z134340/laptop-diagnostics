@@ -99,12 +99,12 @@ def find_duplicates(root):
     groups.sort(key=lambda g: (-g["wasted_bytes"], g["files"][0]))
     return groups, scanned
 
-def main(argv):
-    out  = argv[1]
-    root = argv[2] if len(argv) > 2 else os.path.expanduser("~")
+def build_result(root):
+    """掃描 root 並回傳 M1 的完整結果 dict(欄位名稱是與 generate_report.py 的契約,不可改)。
+    CLI(main)與套件模組 macvitals.modules.m01_dupes 都呼叫這裡,避免兩份結構各自演化。"""
     groups, scanned = find_duplicates(root)
     total_wasted = sum(g["wasted_bytes"] for g in groups)
-    result = {
+    return {
         "module": "M1",
         "scan_time": datetime.now().isoformat(),
         "method": "python-hash",
@@ -114,9 +114,18 @@ def main(argv):
         "total_wasted_bytes": total_wasted,
         "groups": groups[:MAX_GROUPS],
     }
+
+def summary_line(result):
+    return (f"  → 重複群組:{result['total_groups']} 個,"
+            f"可釋空間:{result['total_wasted_bytes'] / 1024**3:.2f} GB(比對 {result['scanned_files']} 個檔案)")
+
+def main(argv):
+    out  = argv[1]
+    root = argv[2] if len(argv) > 2 else os.path.expanduser("~")
+    result = build_result(root)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"  → 重複群組:{len(groups)} 個,可釋空間:{total_wasted / 1024**3:.2f} GB(比對 {scanned} 個檔案)")
+    print(summary_line(result))
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

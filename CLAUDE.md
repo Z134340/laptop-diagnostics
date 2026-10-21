@@ -8,18 +8,21 @@
 - 所有收集操作僅限 `find`（read-only）、Python 唯讀 hash 比對（`m1_dupes.py`）、`brew`（read-only subcommands）、`md5` / `shasum`
 - **修復動作（刪 symlink、改 `~/.bash_profile`、`brew upgrade` 等）必須先逐項列出、取得使用者明確授權後才執行**；不得在授權範圍外動任何真實檔案
 - 若遇到需要 `sudo` 的指令，記錄「權限不足，跳過」，繼續下一步
-- 暫存資料寫入 `report/data/` 目錄，不寫到系統路徑
+- 暫存資料寫入 `report/data/` 目錄，不寫到系統路徑（收集套件 `macvitals.collect` 唯一會寫的就是 `--data-dir`，預設 `report/data/`）
 
 ## 執行順序
 - **非技術使用者入口:雙擊 `開始體檢.command`** → 啟動 `app_server.py`(127.0.0.1:8788)→ 瀏覽器首頁按「開始體檢」→ 背景跑掃描+顯示進度 → 完成自動跳報告 → 報告內一鍵修復。打包用 `bash package.sh`(產出 `laptop-diagnostics-portable.zip`,**排除個人掃描資料**)。
 - **標準入口(開發/CLI,確保一致性)：`bash run.sh`**(= diagnose.sh → generate_report.py;`--serve` 連同啟動修復伺服器、`--open` 開純檢視報告)。
 - 手動分步:
-  1. 不需安裝額外工具（M1 已改為純 Python 比對，不依賴 `fdupes`）
-  2. 執行 `diagnose.sh`（十一模組唯讀收集 → `report/data/*.json`）
-  3. `python3 generate_report.py` 生成 `report/index.html`
+  1. 不需安裝額外工具(M1 為純 Python 比對,不依賴 `fdupes`;整個收集套件只用標準函式庫,Apple 內建 python3 3.9 即可)
+  2. `python3 -m macvitals.collect`(十一模組唯讀收集 → `report/data/*.json`;`bash diagnose.sh` 是它的薄殼,只多 banner 與顏色 log)
+     - 只重跑某幾個模組:`python3 -m macvitals.collect --only m2 m7`(其餘模組的 JSON 不動);`--list` 列出模組
+     - 任一模組拋例外 → 只在該模組 JSON 寫 `{"module","scan_time","error"}`,其餘模組照跑、exit code 仍為 0
+     - M1 / M3 / M9 最慢且互相獨立,並行;其餘依序。進度持續寫 `report/data/progress.json`
+  3. `python3 generate_report.py` 生成 `report/index.html`(含 `error` 的模組:該分頁與摘要卡顯示「此模組收集失敗:…」,規則表對它視為未命中)
   4. 完成後回報十一模組摘要數字
-  5.（選用）`python3 repair_server.py` 啟動修復伺服器（127.0.0.1:8787），讓摘要頁「修復」按鈕能一鍵執行白名單修復；不啟動則為純唯讀檢視
-- **一致性守則:任何改動 `diagnose.sh` 後,務必 `bash run.sh` 完整跑一次驗證**(`set -euo pipefail` 下,單一模組的 python 例外會中止整支腳本,且資料檔須與 `generate_report.py` 讀取的欄位一致)。
+  5.(選用)`python3 repair_server.py` 啟動修復伺服器(127.0.0.1:8787),讓摘要頁「修復」按鈕能一鍵執行白名單修復;不啟動則為純唯讀檢視
+- **一致性守則:改動 `macvitals/modules/*.py` 後,先 `python3 -m unittest discover -s tests -v`,再至少 `python3 -m macvitals.collect --only <該模組> && python3 generate_report.py` 看報告;改到 JSON 欄位就是改資料契約,`generate_report.py`(與 `tests/` fixture)要同步改。合併前以 `bash run.sh` 完整跑一次。**
 - 報告摘要頁版面固定順序:頁面說明 → 全部檢查模組一覽 → 整體判讀 → 需要你注意的事 → 運作良好的部分 → 修復涵蓋範圍。
 
 ## 前端一鍵修復（repair_server.py）+ 規則登錄表
@@ -30,19 +33,23 @@
 - 安全：僅綁 `127.0.0.1`、每次請求比對啟動時隨機 token、只允許白名單；需權限者（防火牆）用 `osascript ... with administrator privileges` 跳原生授權；`update_pip` 只升 pip 本身且 `--user`，不動系統 Python；不做需重啟的系統更新（只開設定頁）。
 
 ## 模組定義
-| ID | 名稱 | 核心指令 |
-|----|------|----------|
-| M1 | 重複檔案 | `python3 m1_dupes.py <json> ~`（大小分桶 → 前 64 KB hash → 全檔 hash；略過 symlink、hardlink 不重複計） |
-| M2 | 孤兒/損壞項目 | `find -L ~ -type l ! -name .DS_Store 2>/dev/null`（broken symlinks）+ `brew doctor` |
-| M3 | 大型檔案 Top 50 | `find / -not \( -path /System -prune \) -not \( -path /private/var -prune \) -size +100M -type f 2>/dev/null` |
-| M4 | 開發環境健檢 | `node -v`, `npm doctor`, `python3 --version`, `brew list --versions` |
-| M5 | 可回收空間 | `du -sk` 各類快取/Trash/iOS 備份/DerivedData |
-| M6 | 電池與電源健康 | `system_profiler SPPowerDataType` |
-| M7 | 系統健康 | `diskutil info /`（SMART）、`memory_pressure`、`sysctl vm.swapusage`、`tmutil listlocalsnapshots /` |
-| M8 | 登入與背景項目 | `~/Library/LaunchAgents`、`/Library/Launch{Agents,Daemons}`、登入項目（osascript） |
-| M9 | 安全與更新狀態 | `fdesetup status`、`csrutil status`、`spctl --status`、`socketfilterfw --getglobalstate`、`softwareupdate -l`、`systemextensionsctl list` |
-| M10 | 近期當機與診斷報告 | 掃 `~/Library/Logs/DiagnosticReports` + `/Library/Logs/DiagnosticReports`（`.crash`/`.ips`/`.panic`/`.spin`/`.hang`/`.diag`），依 App 聚合近 30/7 天、標 kernel panic |
-| M11 | 分享與遠端存取 | 對 localhost 探聽通訊埠（22 SSH／5900 VNC／445 SMB／548 AFP／3283 ARD，`nc -z`）+ `autoLoginUser`；**勿用 `launchctl list` 判服務開關（假陽性）** |
+每個模組一支檔(`macvitals/modules/mNN_*.py`),提供 `MODULE`/`FILENAME`/`LABEL`/`START_MSG`、`collect() -> dict`、`summary(result) -> str`;`macvitals/collect.py` 的 `MODULES` 是固定順序的登錄表。
+
+| ID | 名稱 | 套件模組 | 核心做法 |
+|----|------|----------|----------|
+| M1 | 重複檔案 | `m01_dupes.py` → 根目錄 `m1_dupes.build_result()` | 純 Python:大小分桶 → 前 64 KB hash → 全檔 hash;略過 symlink、hardlink 不重複計(**並行群組**) |
+| M2 | 孤兒/損壞項目 | `m02_broken.py` | `find -L ~ … -type l -print0`(broken symlinks,bytes 解析)+ `brew doctor`,三分類 |
+| M3 | 大型檔案 Top 50 | `m03_large.py` | `os.walk('/')` 剪枝 /System /private/var /Volumes,≥100 MB(**並行群組**) |
+| M4 | 開發環境健檢 | `m04_env.py` | `node -v`, `npm doctor`, `python3 --version`, `brew list --versions`, `brew outdated`, `pip3 list --outdated`, `npm outdated -g` |
+| M5 | 可回收空間 | `m05_reclaimable.py` | `du -sk` 各類快取/Trash/iOS 備份/DerivedData |
+| M6 | 電池與電源健康 | `m06_battery.py` | `system_profiler SPPowerDataType` |
+| M7 | 系統健康 | `m07_system.py` | `diskutil info /`(SMART)、`memory_pressure`、`sysctl vm.swapusage`、`tmutil listlocalsnapshots /`、`ps` 即時資源 Top |
+| M8 | 登入與背景項目 | `m08_startup.py` | `~/Library/LaunchAgents`、`/Library/Launch{Agents,Daemons}`、登入項目(osascript) |
+| M9 | 安全與更新狀態 | `m09_security.py` | `fdesetup status`、`csrutil status`、`spctl --status`、`socketfilterfw --getglobalstate`、`softwareupdate -l`、`systemextensionsctl list`(**並行群組**) |
+| M10 | 近期當機與診斷報告 | `m10_crashes.py` | 掃 `~/Library/Logs/DiagnosticReports` + `/Library/Logs/DiagnosticReports`(`.crash`/`.ips`/`.panic`/`.spin`/`.hang`/`.diag`),依 App 聚合近 30/7 天、標 kernel panic |
+| M11 | 分享與遠端存取 | `m11_sharing.py` | 對 localhost 探聽通訊埠(22 SSH/5900 VNC/445 SMB/548 AFP/3283 ARD,`socket`)+ `autoLoginUser` + Tailscale + `lsof` 非 loopback 監聽;**勿用 `launchctl list` 判服務開關(假陽性)** |
+
+共用工具在 `macvitals/modules/base.py`:`run(cmd, timeout, merge_stderr, strip, error_value)`、`now_iso()`、`write_json(path, obj)`(utf-8、`ensure_ascii=False`、先寫暫存檔再 `os.replace`)。
 
 > M7 另含即時資源 Top（`ps -arcwwwxo`/`-amcwwwxo`，CPU/記憶體前段快照）。
 
@@ -54,6 +61,8 @@
 - `report/data/m5_reclaimable.json`、`m6_battery.json`、`m7_system.json`（含 `top_cpu`/`top_mem`/`top_cpu_max`）、`m8_startup.json`、`m9_security.json`（含 `system_extensions`）
 - `report/data/m10_crashes.json`（依 App 聚合 `apps`、近 30/7 天計數、`panic_count_30d`、`recent`）
 - `report/data/m11_sharing.json`（`services` 各服務 port/state、`open_count`、`auto_login`）
+- `report/data/progress.json`（收集進度:`step`/`message`/`pct`/`done`/`running`/`failed`/`pending`/`timings`/`finished`;`app_server.py` 讀它畫進度條,不再猜 log 行）
+- 模組收集失敗時,該模組的 JSON 只有 `{"module": "M3", "scan_time": "…", "error": "<例外類型>: <訊息>"}`;`generate_report.py` 以 `error` 欄位為判斷依據
 - `report/index.html`（互動式，含十一個 tab、篩選器、可釋空間加總）
 
 ## 經驗與判讀（重要，詳見 `.claude/skills/laptop-diagnostics/SKILL.md`）
@@ -62,9 +71,12 @@
   - `app_lock`（`SingletonLock`/`SingletonCookie`/`SingletonSocket`/`RunningChromeVersion`/`.lock`）：App 執行鎖 → 勿動
   - `stale`（其餘）：指向已刪目標的真殘留 → 可在授權下清理（刪前雙重確認 `islink` 且目標不存在，只 `unlink` 連結本身）
 - **`brew doctor` 多為 PATH 設定問題**（非壞檔）；修 `~/.bash_profile` 後須以 `bash -lc 'brew doctor'` 驗證（非 login shell 不讀 profile，會誤報）。
-- **腳本陷阱**：`diagnose.sh` 有 `set -euo pipefail`，任一 python heredoc 例外會中止全腳本。**每個用 `sys.argv` 的 heredoc 都要 `import sys`**（M3 曾因此中止）。改腳本後完整跑一次驗證。
-- **heredoc 一律加引號 `<<'PYEOF'`**，掃描資料走暫存檔／argv，絕不內插進 Python 原始碼（M2 曾把 `find` 結果塞進 `"""…"""`，檔名含 `\N` 就 SyntaxError 整支中止，且可被構造的檔名注入程式碼）。
+- **套件結構**:`macvitals/collect.py`(入口:逐模組 try/except 隔離、`--only`、`progress.json`、M1/M3/M9 `ThreadPoolExecutor` 並行)→ `macvitals/modules/mNN_*.py`(每模組 `collect() -> dict`、`summary(result)`)→ `macvitals/modules/base.py`(`run()`/`now_iso()`/`write_json()`)。`diagnose.sh` 只是薄殼,`run.sh`/`開始體檢.command`/`app_server.py` 照常呼叫它。
+- **模組失敗語意**:模組內「指令不存在/逾時」由 `base.run()` 回傳字串(`"error: …"` 或 `""`),那是正常資料、規則表照判;只有真的拋例外才是模組失敗 → 收集端寫 `error` 欄位、報告標示、規則視為未命中。**不要在模組裡用大 try/except 把例外吞成空資料**,那會讓報告把「沒掃到」當成「沒問題」。
+- **掃描資料絕不內插進程式碼或 shell 字串**:檔名一律走 bytes → `decode("utf-8", "replace")`(M2 `find -print0`、M1/M3 `os.fsencode`)、指令用 subprocess list 或固定字串(舊版曾把 `find` 結果塞進 heredoc 原始碼,檔名含 `\N` 就 SyntaxError 整支中止,且可被構造檔名注入)。
+- **M7 的即時資源 Top 必須在並行群組之後才跑**(collect.py 的順序刻意如此),否則快照會把掃描本身(python3/find 高 CPU)誤報成「程序高 CPU 占用」。
+- **Python 3.9 相容、只用標準函式庫**:不用 `match`、不用 `X | Y` 型別語法、不加第三方套件(Apple 內建 python3 就能跑)。CI(`.github/workflows/ci.yml`:macos-latest、`setup-python` 鎖 3.9)跑單元測試、`bash -n diagnose.sh`、`python3 -m macvitals.collect --only m6 m7 m8 m9 m11 && python3 generate_report.py` smoke。
 - **報告 HTML 跳脫**：`generate_report.py` 所有掃描資料字串都要過 `e()`（html.escape）。報告由本機伺服器提供且含修復 token，未跳脫的檔名可注入 script 直接呼叫 `/api/fix`。
-- **測試**：`python3 -m unittest discover -s tests -v`（純標準函式庫）。
-- **效能**：M3 全碟掃描最慢；要單獨刷新某模組就複用該模組邏輯，別為了刷新而重跑整支。
+- **測試**：`python3 -m unittest discover -s tests -v`（純標準函式庫;`test_p0.py` P0 回歸、`test_collect.py` 收集隔離/`--only`/並行/進度檔/報告對失敗模組的呈現。會掃磁碟的模組在測試裡以 `unittest.mock` 換成假 `collect()`,不會真的全碟掃描）。
+- **效能**：M1 / M3 全碟掃描最慢(已與 M9 並行)；要單獨刷新某模組用 `python3 -m macvitals.collect --only mN`，別為了刷新而重跑整支。
 - **M4 版本**：brew 管理者以 `brew outdated` 為準；系統工具（Apple python3 3.9 / 系統 ruby 2.6 / Apple git）由 macOS 控管，不單獨升，開發改用 brew 版。node 大版本升級前先 `npm ls -g` 快照全域套件。

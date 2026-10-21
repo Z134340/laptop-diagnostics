@@ -41,24 +41,29 @@ bash run.sh --serve
 手動分步:
 
 ```bash
-bash diagnose.sh          # 1) 收集十一模組資料 → report/data/*.json
-python3 generate_report.py # 2) 產生 report/index.html
-open report/index.html     # 3) 純檢視
-python3 repair_server.py   # 4)(選用)啟動修復伺服器 http://127.0.0.1:8787
+python3 -m macvitals.collect              # 1) 收集十一模組資料 → report/data/*.json(bash diagnose.sh 等價,只多 banner)
+python3 -m macvitals.collect --only m2 m7 #    只重跑指定模組,其餘模組的 JSON 不動;--list 列出模組
+python3 generate_report.py                # 2) 產生 report/index.html
+open report/index.html                    # 3) 純檢視
+python3 repair_server.py                  # 4)(選用)啟動修復伺服器 http://127.0.0.1:8787
 ```
 
-> 不需安裝額外工具。M1 重複檔比對與 M3 全碟掃描最慢,整體約數分鐘。
+> 不需安裝額外工具,Apple 內建的 python3 即可。M1 重複檔比對與 M3 全碟掃描最慢(已和 M9 並行),整體約數分鐘。
+> 任一模組失敗不會中止整個掃描:該模組的 JSON 會寫入 `error`,報告對應分頁顯示「此模組收集失敗」,其餘模組照常。
 
 ## 檔案
 
 | 檔案 | 用途 |
 |---|---|
 | `run.sh` | 標準入口,串起診斷→產報告(→可選修復伺服器) |
-| `diagnose.sh` | 十一模組唯讀收集,寫入 `report/data/m{1..11}_*.json` |
-| `m1_dupes.py` | M1 重複檔比對(純 Python:大小分桶 → 前 64 KB hash → 全檔 hash) |
+| `macvitals/` | 收集套件:`collect.py` 入口(逐模組隔離、`--only`、`progress.json`、M1/M3/M9 並行)+ `modules/m01_dupes.py` … `m11_sharing.py`(每模組 `collect() -> dict`)+ `modules/base.py` 共用工具 |
+| `diagnose.sh` | `python3 -m macvitals.collect` 的薄殼(banner + 顏色 log + 轉傳參數),寫入 `report/data/m{1..11}_*.json` |
+| `m1_dupes.py` | M1 重複檔比對(純 Python:大小分桶 → 前 64 KB hash → 全檔 hash);`macvitals/modules/m01_dupes.py` 直接包它 |
 | `generate_report.py` | 讀 JSON,產出 `report/index.html`(含修復規則表) |
 | `repair_server.py` | 本機白名單修復 API(僅 127.0.0.1 + token) |
 | `report/index.html` | 互動報告:摘要 + M1–M11 共 12 個分頁 |
+| `tests/` | 單元測試(`python3 -m unittest discover -s tests -v`,純標準函式庫) |
+| `.github/workflows/ci.yml` | CI:macos-latest + Python 3.9,跑測試、`bash -n diagnose.sh`、`--only m6 m7 m8 m9 m11` smoke 並產報告 |
 
 ## 十一個診斷模組
 
@@ -91,10 +96,13 @@ python3 repair_server.py   # 4)(選用)啟動修復伺服器 http://127.0.0.1:87
 
 ## 開發須知
 
-- 改 `diagnose.sh` 後務必 `bash run.sh` 完整跑一次驗證(`set -euo pipefail` 下,任一模組的 python 例外會中止整支)。
-- **資料契約**:`diagnose.sh` 產出的 JSON 欄位要對齊 `generate_report.py` 讀取的欄位;改一邊就兩邊一起改。
+- 收集邏輯在 `macvitals/modules/mNN_*.py`,每個模組一支檔、`collect() -> dict`。改完先跑測試,再 `python3 -m macvitals.collect --only <該模組> && python3 generate_report.py` 看報告;合併前 `bash run.sh` 完整跑一次。
+- **單一模組失敗不會中止掃描**:`macvitals.collect` 對每個模組 try/except,失敗只在該模組 JSON 寫 `error` 欄位、exit code 仍為 0;報告把該分頁與摘要卡標成「此模組收集失敗」、規則視為未命中。模組內遇到指令缺失/逾時請回傳字串資料(`base.run()` 已處理),真的異常就讓例外拋出,別吞成空資料。
+- **資料契約**:模組 JSON 的欄位名稱與結構要對齊 `generate_report.py` 讀取的欄位(以及 `tests/` 的 fixture);改一邊就兩邊一起改。
 - 新增一種修復 = 加 1 條 `RULES`(generate_report.py)+ 1 個白名單動作(repair_server.py),並確保兩邊 action id 一致。
-- `diagnose.sh` 內的 python heredoc 一律 `<<'PYEOF'`(加引號);掃描資料走暫存檔或 argv,**不要內插進 Python 原始碼**(檔名含 `\N`、`"""` 會讓整支中止,且可注入程式碼)。
+- 掃描資料(檔名、指令輸出)一律當資料處理:bytes → `decode("utf-8", "replace")`、subprocess list、固定指令字串;**不要內插進 Python 原始碼或 shell 字串**(檔名含 `\N`、`"""` 曾讓整支中止,且可注入程式碼)。
+- **Python 3.9 相容、只用標準函式庫**(Apple 內建 python3 就能跑):不用 `match`、不用 `X | Y` 型別語法、不加第三方套件。
+- 收集階段絕對唯讀:`macvitals.collect` 唯一會寫的是 `report/data/`(或 `--data-dir` 指定目錄)。
 - `generate_report.py` 裡所有來自掃描資料的字串(檔名、指令輸出、程序名…)放進 HTML 前都要經過 `e()`(html.escape)。
-- 測試:`python3 -m unittest discover -s tests -v`(純標準函式庫,不需安裝任何套件)。
+- 測試:`python3 -m unittest discover -s tests -v`(純標準函式庫,不需安裝任何套件;會掃磁碟的模組在測試裡被換成假的,不會跑全碟掃描)。CI 在 `.github/workflows/ci.yml`。
 - 更多判讀經驗見 `.claude/skills/laptop-diagnostics/SKILL.md`。
