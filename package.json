@@ -5,6 +5,6 @@
     "build:manual": "node build_manual.js"
   },
   "dependencies": {
-    "docx": "^9.13.0"
+    "docx": "9.7.2"
   }
 }
