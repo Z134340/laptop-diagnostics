@@ -113,27 +113,38 @@ python3 repair_server.py                  # 4)(選用)啟動修復伺服器 http
 
 ## 重建手冊
 
-`MacVitals 使用手冊（白話版）.docx` 由 `build_manual.js` 以 [`docx`](https://www.npmjs.com/package/docx) 套件產生(需要 Node.js):
+`MacVitals 使用手冊（白話版）.docx`(封面「版本 1.3 · 2026-06-25」)由 `build_manual.js` 以 [`docx`](https://www.npmjs.com/package/docx) 套件產生(需要 Node.js)。腳本的內文與結構已與 repo 內已提交的這份 .docx 逐段對齊:用同一組截圖重建,`document.xml`、樣式、編號、頁尾等各部分與已提交檔**逐位元組相同**(僅 `docProps/core.xml` 的建立時間不同)。`docx` 套件版本固定為 `9.7.2`(9.6.0–9.7.2 的輸出相同,9.8 起的 XML 細節不同),請勿隨意升版。
 
 ```bash
 npm install
 npm run build:manual
 ```
 
-輸出檔是 repo 根目錄下**同名**的 `MacVitals 使用手冊（白話版）.docx`,會直接覆蓋。
+預設輸出是目前資料夾下**同名**的 `MacVitals 使用手冊（白話版）.docx`,會直接覆蓋。想先看結果、不動已提交的檔案,可指定輸出路徑:`node build_manual.js /tmp/manual-check.docx`。改手冊內文就改 `build_manual.js` 裡的字串;改版時記得同步更新檔內的 `VERSION`(封面版本與日期)。
 
-腳本會讀 `manual_assets/` 內的截圖。截圖含本機彙總數據,已被 `.gitignore` 排除、**不入版控**,需自行準備(用「開始體檢」截圖存成 PNG)。檔名如下,缺任何一張,腳本讀檔時就會報錯:
+### 需要的 4 張截圖
 
-| 檔案 | 內容 |
-|---|---|
-| `manual_assets/01_landing.png` | 首頁(封面與「雙擊開始體檢」段落共用) |
-| `manual_assets/02_progress.png` | 掃描進行中的進度條 |
-| `manual_assets/03_report_summary.png` | 報告摘要頁上半部(模組一覽 + 整體判讀) |
-| `manual_assets/05_module_m3.png` | M3 大型檔案分頁 |
-| `manual_assets/06_attention.png` | 「需要你注意的事」與右側修復按鈕 |
-| `manual_assets/07_coverage.png` | 「修復涵蓋範圍」對照表 |
+腳本會讀 `manual_assets/` 內的 4 張截圖。這個資料夾已被 `.gitignore` 排除、**不入版控**(.docx 內的截圖已是去敏示範資料;自行重新截圖時請留意別帶進本機的彙總數據);缺任何一張,腳本會直接提示並結束。
 
-> ⚠️ 腳本產出的章節與內文,和已提交的 `.docx`(封面「版本 1.3 · 2026-06-25」)**並不相同**——已提交的那份較精簡,不是這支腳本的輸出。重建會覆蓋它;重建前請先確認以哪一份為準。
+| 檔案 | 內容 | 手冊中的位置 |
+|---|---|---|
+| `manual_assets/01_landing.png` | 首頁(「開始體檢」按鈕) | 封面、「四、怎麼使用」步驟 2(同一張用兩次) |
+| `manual_assets/02_progress.png` | 掃描進行中的進度條 | 「四、怎麼使用」步驟 3 |
+| `manual_assets/03_report_summary.png` | 報告摘要:十一個面向一覽(去敏示範資料) | 「五、報告怎麼看」 |
+| `manual_assets/04_attention.png` | 「需要你注意的事」與右側修復按鈕(去敏示範資料) | 「六、一鍵修復怎麼用」 |
+
+最簡單的取得方式,是直接從已提交的 .docx 把這 4 張解出來(.docx 內的圖片檔名就是內容雜湊,固定不變):
+
+```bash
+mkdir -p manual_assets
+D="MacVitals 使用手冊（白話版）.docx"
+unzip -p "$D" word/media/8bb2f3c0d55a1c92843129563fcbe658643dcbd4.png > manual_assets/01_landing.png
+unzip -p "$D" word/media/179a69fa85bec0193d56ec03b0a9a8965f1301b6.png > manual_assets/02_progress.png
+unzip -p "$D" word/media/b9d51be14810878f05a12952c83ec337e10d27c0.png > manual_assets/03_report_summary.png
+unzip -p "$D" word/media/92f594428898f9e9d43a013f8f1b97f2d6367f29.png > manual_assets/04_attention.png
+```
+
+要換成新的截圖也行:同樣用這 4 個檔名放進 `manual_assets/` 即可,圖片寬度固定、高度依實際長寬比自動換算。
 
 `laptop-diagnostics 技術實作手冊.docx` 沒有建置腳本,是手工維護的。
 
