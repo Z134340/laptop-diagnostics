@@ -9,12 +9,25 @@
 """
 import ast, json, os, socket, subprocess, sys, tempfile, threading, time, unittest, http.client, urllib.request
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import app_server
 import repair_server as rs
+
+
+class TestStartupWithoutDNS(unittest.TestCase):
+    def test_bind_does_not_depend_on_reverse_dns(self):
+        # HTTPServer normally resolves server_name before it starts accepting
+        # requests. A stalled resolver must not prevent a loopback-only app
+        # from becoming ready.
+        with mock.patch.object(socket, "getfqdn", side_effect=TimeoutError("resolver unavailable")) as lookup:
+            with app_server.ThreadingServer(("127.0.0.1", 0), app_server.Handler) as server:
+                self.assertEqual(server.server_name, "127.0.0.1")
+                self.assertEqual(server.server_port, server.server_address[1])
+            lookup.assert_not_called()
 
 
 class TestUnifiedServer(unittest.TestCase):
