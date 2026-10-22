@@ -268,6 +268,12 @@ class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def server_bind(self):
+        # This server only uses a numeric loopback address. HTTPServer's
+        # reverse DNS lookup can stall startup before /api/ping is available.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
 def _is_macvitals(port):
     """該埠是否已有一個 MacVitals 在跑(背景常駐服務或上次未關的實例)。"""
     try:
