@@ -2,7 +2,7 @@
 
 > **命名**:MacVitals 是產品名(介面、報告、使用手冊都用這個名字);`laptop-diagnostics` 是 GitHub repo、資料夾與 Claude Code skill 的名稱——兩者是同一個專案。
 
-對本機 macOS 執行**十一維度唯讀診斷**,產出單檔互動式報告 `report/index.html`;並可選擇性啟動本機**一鍵修復伺服器**,讓報告上的按鈕直接執行白名單修復。
+對本機 macOS 執行**十一維度唯讀診斷**,產出單檔互動式報告 `report/index.html`;唯一的本機伺服器 `app_server.py`(127.0.0.1:8788)同時提供「開始體檢」首頁、掃描進度、報告與**一鍵修復** API,讓報告上的按鈕直接執行白名單修復。
 
 > 安全優先:診斷階段純唯讀,絕不刪改任何使用者檔案。任何會動到系統/檔案的修復,都需你在報告上逐項點擊確認,且伺服器端會在執行當下再次驗證現況。
 
@@ -36,7 +36,7 @@ bash run.sh
 # 跑完直接開報告(純檢視)
 bash run.sh --open
 
-# 跑完並啟動修復伺服器(報告上的「修復」按鈕才會生效)
+# 跑完並啟動本機伺服器、直接開報告頁(報告上的「修復」按鈕才會生效)
 bash run.sh --serve
 ```
 
@@ -47,7 +47,7 @@ python3 -m macvitals.collect              # 1) 收集十一模組資料 → repo
 python3 -m macvitals.collect --only m2 m7 #    只重跑指定模組,其餘模組的 JSON 不動;--list 列出模組
 python3 generate_report.py                # 2) 產生 report/index.html
 open report/index.html                    # 3) 純檢視
-python3 repair_server.py                  # 4)(選用)啟動修復伺服器 http://127.0.0.1:8787
+python3 app_server.py --report            # 4)(選用)啟動本機伺服器並開報告頁 http://127.0.0.1:8788/report(與「開始體檢」同一支)
 ```
 
 > 不需安裝額外工具,Apple 內建的 python3 即可。M1 重複檔比對與 M3 全碟掃描最慢(已和 M9 並行),整體約數分鐘。
@@ -57,12 +57,14 @@ python3 repair_server.py                  # 4)(選用)啟動修復伺服器 http
 
 | 檔案 | 用途 |
 |---|---|
-| `run.sh` | 標準入口,串起診斷→產報告(→可選修復伺服器) |
+| `run.sh` | 標準入口,串起診斷→產報告(`--serve` 再啟動本機伺服器 `app_server.py --report`) |
+| `開始體檢.command` | 非技術使用者入口:雙擊 → `python3 app_server.py` → 自動開瀏覽器 |
+| `app_server.py` | **唯一的本機伺服器**(127.0.0.1:8788,被占用往後找空埠):首頁「開始體檢」、背景掃描與進度 `/api/scan*`、`/report`、`/api/ping`、`/api/fix`;只接受本機 Host/Origin + token |
 | `macvitals/` | 收集套件:`collect.py` 入口(逐模組隔離、`--only`、`progress.json`、M1/M3/M9 並行)+ `modules/m01_dupes.py` … `m11_sharing.py`(每模組 `collect() -> dict`)+ `modules/base.py` 共用工具 |
 | `diagnose.sh` | `python3 -m macvitals.collect` 的薄殼(banner + 顏色 log + 轉傳參數),寫入 `report/data/m{1..11}_*.json` |
 | `m1_dupes.py` | M1 重複檔比對(純 Python:大小分桶 → 前 64 KB hash → 全檔 hash);`macvitals/modules/m01_dupes.py` 直接包它 |
 | `generate_report.py` | 讀 JSON,產出 `report/index.html`(含修復規則表) |
-| `repair_server.py` | 本機白名單修復 API(僅 127.0.0.1 + token) |
+| `repair_server.py` | 修復函式庫(不起 HTTP):15 個白名單動作 `ACTIONS`、Host/Origin 守衛與安全標頭;`app_server.py` 的 `/api/fix` 執行它。直接執行會轉呼叫 `app_server.py --report` |
 | `report/index.html` | 互動報告:摘要 + M1–M11 共 12 個分頁 |
 | `tests/` | 單元測試(`python3 -m unittest discover -s tests -v`,純標準函式庫) |
 | `.github/workflows/ci.yml` | CI:macos-latest + Python 3.9,跑測試、`bash -n diagnose.sh`、`--only m6 m7 m8 m9 m11` smoke 並產報告 |
@@ -87,7 +89,7 @@ python3 repair_server.py                  # 4)(選用)啟動修復伺服器 http
 
 報告摘要頁有一張**修復規則表**(`generate_report.py` 內 `RULES`):依當次掃描結果,命中的問題才會在「需要你注意的事」長出對應按鈕(例:防火牆關才有開火牆鈕;pip 過舊才有更新 pip 鈕;都正常則按鈕自動消失)。可展開「修復涵蓋範圍」看全部 27 條規則(其中 13 種可一鍵修復)與本次命中狀況。
 
-修復伺服器白名單動作(15)、每個都在執行當下重新驗證現況:
+白名單動作(15)定義在 `repair_server.py`、由 `app_server.py` 的 `POST /api/fix` 執行,每個都在執行當下重新驗證現況:
 
 `fix_path` · `brew_cleanup` · `clear_caches` · `clean_stale_symlinks` · `fix_m2` · `enable_firewall` · `open_software_update` · `brew_upgrade` · `update_pip` · `update_npm` · `thin_snapshots` · `open_filevault_settings` · `enable_gatekeeper` · `disable_remote_login` · `disable_screen_sharing`
 
@@ -108,7 +110,8 @@ python3 repair_server.py                  # 4)(選用)啟動修復伺服器 http
 - **Python 3.9 相容、只用標準函式庫**(Apple 內建 python3 就能跑):不用 `match`、不用 `X | Y` 型別語法、不加第三方套件。
 - 收集階段絕對唯讀:`macvitals.collect` 唯一會寫的是 `report/data/`(或 `--data-dir` 指定目錄)。
 - `generate_report.py` 裡所有來自掃描資料的字串(檔名、指令輸出、程序名…)放進 HTML 前都要經過 `e()`(html.escape)。
-- 測試:`python3 -m unittest discover -s tests -v`(純標準函式庫,不需安裝任何套件;會掃磁碟的模組在測試裡被換成假的,不會跑全碟掃描)。CI 在 `.github/workflows/ci.yml`。
+- 測試:`python3 -m unittest discover -s tests -v`(純標準函式庫,不需安裝任何套件;會掃磁碟的模組在測試裡被換成假的,不會跑全碟掃描;`tests/test_server.py` 用隨機埠起真的伺服器驗證各路徑與 Host/Origin 守衛)。CI 在 `.github/workflows/ci.yml`。
+- 本機伺服器只有 `app_server.py` 一支:新增 API 路徑只改它的 `Handler`;`repair_server.py` 只放白名單動作與守衛,不要再在裡面起 HTTP。
 - 更多判讀經驗見 `.claude/skills/laptop-diagnostics/SKILL.md`。
 
 ## 重建手冊

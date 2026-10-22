@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """
-app_server.py — Laptop Diagnostics 一站式網頁應用(給非技術使用者)
-首頁一顆「開始體檢」按鈕 → 背景執行掃描並顯示進度 → 完成自動跳到報告 → 報告內可一鍵修復。
+app_server.py — MacVitals 唯一的本機伺服器(127.0.0.1:8788,被占用就往後找空埠)
 
-啟動:python3 app_server.py(通常由「開始體檢.command」雙擊啟動)
-安全:僅綁 127.0.0.1、token 驗證;修復動作沿用 repair_server 的白名單,執行當下再驗證現況。
+同一支伺服器提供全部入口:
+  GET  /            首頁(「開始體檢」按鈕;/auto 載入即開掃,只限本機來源)
+  POST /api/scan    背景執行 bash diagnose.sh → generate_report.py
+  GET  /api/scan/status  掃描進度(讀 report/data/progress.json)
+  GET  /report      報告 report/index.html,把修復 token 注入 <!--REPAIR_HOOK-->(沒有報告 → 302 到 /)
+  GET  /api/ping    報告頁用來偵測伺服器是否還在;啟動時也用它偵測是否已有實例
+  POST /api/fix     白名單修復(動作定義在 repair_server.ACTIONS,執行當下再驗證現況)
+
+啟動:python3 app_server.py(「開始體檢.command」雙擊)/ python3 app_server.py --report(run.sh --serve,直接開報告頁)
+安全:僅綁 127.0.0.1;每個請求比對 Host、POST 再比對 Origin(repair_server.host_allowed / origin_allowed);
+      POST 需啟動時隨機產生的 token;每個回應帶 repair_server.SECURITY_HEADERS。只有這一套 Handler / 守衛。
+環境變數:DIAG_NO_BROWSER=1 不自動開瀏覽器。
 """
-import http.server, socketserver, json, os, subprocess, secrets, threading, time, webbrowser, sys, socket, urllib.request
+import argparse, http.server, socketserver, json, os, subprocess, secrets, threading, time, webbrowser, sys, socket, urllib.request
 from pathlib import Path
 
-import repair_server as rs   # 重用白名單修復動作與 sh()
+import repair_server as rs   # 白名單修復動作 ACTIONS、host_allowed/origin_allowed/SECURITY_HEADERS、sh()
 
 PORT  = 8788
 _LAUNCH_BASE = Path(__file__).resolve().parent
@@ -190,6 +199,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _redirect(self, location):
+        self.send_response(302); self.send_header("Location", location)
+        for k, v in rs.SECURITY_HEADERS:
+            self.send_header(k, v)
+        self.end_headers()
+
     def _guard(self, post=False):
         """Host 不是本機 → 403(擋 DNS rebinding);POST 的 Origin 不是本機 → 403。"""
         if not rs.host_allowed(self.headers, BOUND_PORT):
@@ -211,7 +226,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, html, "text/html; charset=utf-8")
         if self.path in ("/report", "/report/", "/report/index.html"):
             if not index_path().exists():
-                self.send_response(302); self.send_header("Location", "/"); self.end_headers(); return
+                return self._redirect("/")
             html = index_path().read_text(encoding="utf-8").replace("<!--REPAIR_HOOK-->",
                    f'<script>window.__REPAIR__={{"token":"{TOKEN}","enabled":true}};</script>')
             return self._send(200, html, "text/html; charset=utf-8")
@@ -231,18 +246,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception:
             return self._send(400, json.dumps({"ok": False, "message": "bad request"}))
         if payload.get("token") != TOKEN:
-            return self._send(403, json.dumps({"ok": False, "message": "授權失敗"}))
+            return self._send(403, json.dumps({"ok": False, "message": "授權失敗(token 不符)"}))
         if self.path == "/api/scan":
             if scan["running"]:
                 return self._send(200, json.dumps({"ok": True, "message": "已在掃描中"}))
             threading.Thread(target=run_scan, daemon=True).start()
             return self._send(200, json.dumps({"ok": True}))
         if self.path == "/api/fix":
-            fn = rs.ACTIONS.get(payload.get("action"))
+            action = payload.get("action")
+            fn = rs.ACTIONS.get(action)
             if not fn:
-                return self._send(400, json.dumps({"ok": False, "message": "未知動作"}))
+                return self._send(400, json.dumps({"ok": False, "message": f"未知動作:{action}"}))
             try: result = fn()
             except Exception as e: result = {"ok": False, "message": f"執行錯誤:{e}"}
+            print(f"[repair] {action} -> {result.get('message', '')}")
             return self._send(200, json.dumps(result, ensure_ascii=False))
         return self._send(404, json.dumps({"ok": False, "message": "unknown endpoint"}))
 
@@ -250,6 +267,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def server_bind(self):
+        # This server only uses a numeric loopback address. HTTPServer's
+        # reverse DNS lookup can stall startup before /api/ping is available.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 def _is_macvitals(port):
     """該埠是否已有一個 MacVitals 在跑(背景常駐服務或上次未關的實例)。"""
@@ -270,33 +293,45 @@ def _free_port(start, n=20):
             s.close()
     return None
 
-def main():
+def _open_browser(url):
+    if os.environ.get("DIAG_NO_BROWSER"):
+        return
+    try: webbrowser.open(url)
+    except Exception: pass
+
+def main(argv=None):
+    """啟動唯一的本機伺服器。回傳 exit code(0 正常結束 / 1 找不到可用的埠)。"""
     global BOUND_PORT
-    # 若 8788 已有 MacVitals 在跑(例如背景常駐服務),不要再起第二個——直接開瀏覽器。
-    if _is_macvitals(PORT):
-        url = f"http://127.0.0.1:{PORT}/"
-        print("MacVitals 已在背景執行中,直接為你開啟報告頁,不需重複啟動。")
-        if not os.environ.get("DIAG_NO_BROWSER"):
-            try: webbrowser.open(url)
-            except Exception: pass
-        return
-    port = _free_port(PORT)
+    ap = argparse.ArgumentParser(description="MacVitals 本機伺服器(首頁、掃描進度、報告、一鍵修復)")
+    ap.add_argument("--report", action="store_true",
+                    help="啟動後直接開報告頁 /report(run.sh --serve 用;沒有報告會回到首頁)")
+    ap.add_argument("--port", type=int, default=PORT,
+                    help=f"起始埠(預設 {PORT};被占用就往後找空埠)")
+    args = ap.parse_args(argv)
+    start = args.port
+    landing = "/report" if args.report else "/"
+    # 若該埠已有 MacVitals 在跑(例如背景常駐服務或上次未關的實例),不要再起第二個——直接開瀏覽器。
+    if _is_macvitals(start):
+        print("MacVitals 已在背景執行中,直接為你開啟網頁,不需重複啟動。")
+        _open_browser(f"http://127.0.0.1:{start}{landing}")
+        return 0
+    port = _free_port(start)
     if port is None:
-        print(f"連接埠 {PORT} 起算都被佔用,請關閉其他視窗或重開機後再試。")
-        return
+        print(f"連接埠 {start} 起算都被佔用,請關閉其他視窗或重開機後再試。")
+        return 1
     BOUND_PORT = port
     with ThreadingServer(("127.0.0.1", port), Handler) as httpd:
-        url = f"http://127.0.0.1:{port}/"
+        url = f"http://127.0.0.1:{port}{landing}"
         print("=" * 56)
         print("  電腦健康體檢 已啟動")
         print(f"  請在瀏覽器操作:{url}")
         print("  ★ 請勿關閉這個視窗(關掉就會停止)。完成後可直接關閉。")
+        print("  報告上的「修復」按鈕只在透過此網址開啟時可用。")
         print("=" * 56)
-        if not os.environ.get("DIAG_NO_BROWSER"):
-            try: webbrowser.open(url)
-            except Exception: pass
+        _open_browser(url)
         try: httpd.serve_forever()
         except KeyboardInterrupt: print("\n已結束。")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

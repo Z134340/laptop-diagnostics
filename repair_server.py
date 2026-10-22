@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-repair_server.py — Laptop Diagnostics 本機修復伺服器
-用途：服務 report/index.html，並提供「白名單」修復 API，讓報告上的「修復」按鈕
-      點一下就真的執行(每個動作伺服器端再驗證一次，需密碼者跳 macOS 原生授權視窗)。
+repair_server.py — MacVitals 修復函式庫(白名單動作 + 本機伺服器守衛)
 
-啟動：python3 repair_server.py   (預設 http://127.0.0.1:8787，會自動開瀏覽器)
-安全：僅綁定 127.0.0.1；每次請求需比對啟動時隨機產生的 token；只執行下列白名單動作。
+這支檔案**不再自己起 HTTP 伺服器**。本機唯一的伺服器是 app_server.py(127.0.0.1:8788),
+它同時提供首頁、掃描進度、報告與 /api/fix;/api/fix 執行的就是這裡的 ACTIONS。
+這裡只放:
+  - ACTIONS:白名單修復動作(每個動作在執行當下重新驗證現況;需密碼者跳 macOS 原生授權視窗)
+  - host_allowed / origin_allowed / SECURITY_HEADERS:伺服器共用的 Host/Origin 守衛與安全標頭
+  - sh() / du_bytes() / human() / port_open():動作用的小工具
+
+直接執行 `python3 repair_server.py` 會轉呼叫 app_server.main(["--report"])(同一支伺服器、直接開報告頁)。
+scripts/check_doc_counts.py 以 ast 讀這裡頂層的 ACTIONS 數,搬動時要同步改它。
 """
-import http.server, socketserver, json, os, subprocess, secrets, webbrowser, sys, socket, urllib.request
-from pathlib import Path
+import os, subprocess, socket
 
-PORT   = 8787
-ROOT   = Path(__file__).parent / "report"
-INDEX  = ROOT / "index.html"
 HOME   = os.path.expanduser("~")
-TOKEN  = secrets.token_hex(16)
-BOUND_PORT = PORT          # 實際綁定的埠(main() 可能往後找空埠),供 Host/Origin 比對
 
 ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 
@@ -241,115 +240,10 @@ ACTIONS = {
     "disable_screen_sharing": act_disable_screen_sharing,
 }
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-
-    def _send(self, code, body, ctype="application/json"):
-        data = body.encode("utf-8") if isinstance(body, str) else body
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        for k, v in SECURITY_HEADERS:
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _guard(self, post=False):
-        """Host 不是本機 → 403;POST 的 Origin 不是本機 → 403。回 False 表示已回應、呼叫端直接 return。"""
-        if not host_allowed(self.headers, BOUND_PORT):
-            self._send(403, json.dumps({"ok": False, "message": "forbidden host"})); return False
-        if post and not origin_allowed(self.headers, BOUND_PORT):
-            self._send(403, json.dumps({"ok": False, "message": "forbidden origin"})); return False
-        return True
-
-    def do_GET(self):
-        if not self._guard(): return
-        if self.path in ("/", "/index.html"):
-            html = INDEX.read_text(encoding="utf-8")
-            inject = f'<script>window.__REPAIR__={{"token":"{TOKEN}","enabled":true}};</script>'
-            html = html.replace("<!--REPAIR_HOOK-->", inject)
-            return self._send(200, html, "text/html; charset=utf-8")
-        if self.path == "/api/ping":
-            return self._send(200, json.dumps({"ok": True}))
-        if self.path == "/favicon.ico":
-            return self._send(204, b"")
-        return self._send(404, "not found", "text/plain")
-
-    def do_POST(self):
-        if not self._guard(post=True): return
-        if self.path != "/api/fix":
-            return self._send(404, json.dumps({"ok": False, "message": "unknown endpoint"}))
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length) or "{}")
-        except Exception:
-            return self._send(400, json.dumps({"ok": False, "message": "bad request"}))
-        if payload.get("token") != TOKEN:
-            return self._send(403, json.dumps({"ok": False, "message": "授權失敗(token 不符)"}))
-        action = payload.get("action")
-        fn = ACTIONS.get(action)
-        if not fn:
-            return self._send(400, json.dumps({"ok": False, "message": f"未知動作:{action}"}))
-        try:
-            result = fn()
-        except Exception as e:
-            result = {"ok": False, "message": f"執行錯誤:{e}"}
-        print(f"[repair] {action} -> {result.get('message','')}")
-        return self._send(200, json.dumps(result, ensure_ascii=False))
-
-
-class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-def _is_macvitals(port):
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=2) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-def _free_port(start, n=20):
-    for p in range(start, start + n):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind(("127.0.0.1", p)); s.close(); return p
-        except OSError:
-            s.close()
-    return None
-
-def main():
-    global BOUND_PORT
-    if not INDEX.exists():
-        print("找不到 report/index.html，請先執行 python3 generate_report.py")
-        sys.exit(1)
-    if _is_macvitals(PORT):
-        url = f"http://127.0.0.1:{PORT}/"
-        print("修復伺服器已在執行中,直接為你開啟報告頁。")
-        try: webbrowser.open(url)
-        except Exception: pass
-        return
-    port = _free_port(PORT)
-    if port is None:
-        print(f"連接埠 {PORT} 起算都被佔用,請關閉其他視窗後再試。")
-        return
-    BOUND_PORT = port
-    with ThreadingServer(("127.0.0.1", port), Handler) as httpd:
-        url = f"http://127.0.0.1:{port}/"
-        print("=" * 56)
-        print("  Laptop Diagnostics 修復伺服器已啟動")
-        print(f"  報告網址：{url}")
-        print("  按 Ctrl+C 結束。修復按鈕只在透過此網址開啟時可用。")
-        print("=" * 56)
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print("\n已結束。")
-
 if __name__ == "__main__":
-    main()
+    # 修復伺服器已併入 app_server.py:這裡只轉呼叫,不留第二套 HTTP 程式碼。
+    import sys
+    print("repair_server.py 已不再自己起伺服器;改由 app_server.py 統一提供首頁、進度、報告與一鍵修復。")
+    print("等同於執行:python3 app_server.py --report " + " ".join(sys.argv[1:]))
+    import app_server
+    sys.exit(app_server.main(["--report"] + sys.argv[1:]))
